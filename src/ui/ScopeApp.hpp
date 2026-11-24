@@ -109,6 +109,9 @@ private:
     std::atomic<double> holdoffUs_{1000.0};
     std::atomic<int> triggerMode_{0};
     std::atomic<bool> follow_{true};
+    // RUN/STOP (spacebar): freezes traces, markers and message list —
+    // acquisition, decoding and logging continue in the background.
+    std::atomic<bool> paused_{false};
     // Newest holdoff-accepted trigger candidate (absolute sample) —
     // written by the analyzer thread, read by the UI for centering.
     // Holdoff gates ONLY this view anchor; trigger events are unfiltered.
@@ -142,6 +145,9 @@ private:
     // common value so manual nav on either axes can be mirrored.
     bool syncedXValid_ = false;
     double syncedX0_ = 0, syncedX1_ = 0;
+    // Position of the accepted trigger whose sweep is held frozen on
+    // screen (holdoff semantics); -1 = not held.
+    int64_t heldSweepPos_ = -1;
     bool lastAutoYTopValid_ = false, lastAutoYDiffValid_ = false;
     double lastAutoYTop0_ = 0, lastAutoYTop1_ = 0;
     double lastAutoYDiff0_ = 0, lastAutoYDiff1_ = 0;

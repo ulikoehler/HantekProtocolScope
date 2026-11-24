@@ -312,6 +312,19 @@ int ScopeApp::run() {
         cursorText_ = std::string(s);
     };
 
+    // RUN/STOP like a real scope: spacebar freezes the display.
+    figure_->canvas().connect("key_press_event",
+                              [this](const vp::Event& e) {
+        if (e.key != " ") return;
+        paused_.store(!paused_.load(std::memory_order_relaxed),
+                      std::memory_order_relaxed);
+        if (backend_)
+            backend_->setWindowTitle(
+                paused_.load(std::memory_order_relaxed)
+                    ? "UliCAN — STOPPED (space to run)"
+                    : "UliCAN");
+    });
+
     if (config_.stats)
         std::cerr << "[ulican] backend created, entering render loop\n";
     renderer_->prepare(*figure_);
@@ -486,6 +499,15 @@ void ScopeApp::processSegment(const uint8_t* bytes, size_t sampleCount,
 // ---------------------------------------------------------------------
 
 void ScopeApp::uiFrame() {
+    if (paused_.load(std::memory_order_relaxed)) {
+        // STOP: discard analyzer events so the display, message list and
+        // markers stay frozen; acquisition continues in the background.
+        UiEvent ev;
+        while (uiQueue_.pop(ev)) {
+        }
+        updateWidgets();
+        return;
+    }
     UiEvent event;
     while (uiQueue_.pop(event)) {
         if (event.kind == UiEvent::Kind::Frame) {
@@ -557,11 +579,10 @@ void ScopeApp::updateScopePlots() {
     // ---- X viewport --------------------------------------------------
     // Trigger-centered view (scope semantics): the anchor is the newest
     // holdoff-accepted trigger that can still be centered inside the
-    // retained buffer. Fresh accepts sit at window center on the live
-    // edge; older accepts freeze the view centered on them; once an
-    // accept leaves the buffer the view falls back to the live edge.
-    // Holdoff gates ONLY this anchor — the trigger event stream runs
-    // continuously.
+    // retained buffer. Once that window is fully populated the whole
+    // picture freezes (held sweep) until the NEXT accepted trigger —
+    // holdoff gates exactly this update. Manual navigation breaks the
+    // hold. The trigger event stream itself runs continuously.
     double vx0 = 0.0, vx1 = windowMs;
     double anchorMs = -1.0;
     if (axesTop_ && axesDiff_ && head > origin) {
@@ -570,6 +591,19 @@ void ScopeApp::updateScopePlots() {
         const int64_t maxAnchor = head - halfW;
         const int64_t cand =
             latestAccepted_.load(std::memory_order_relaxed);
+        if (heldSweepPos_ >= 0 && cand == heldSweepPos_) {
+            const auto t = axesTop_->xlim();
+            const auto d = axesDiff_->xlim();
+            const bool manual =
+                std::fabs(t.min - lastAutoX0_) > 0.02 ||
+                std::fabs(t.max - lastAutoX1_) > 0.02 ||
+                std::fabs(d.min - lastAutoX0_) > 0.02 ||
+                std::fabs(d.max - lastAutoX1_) > 0.02;
+            if (!manual) return; // frozen sweep — nothing updates
+            follow_.store(false, std::memory_order_relaxed);
+            heldSweepPos_ = -1;
+            syncedXValid_ = false;
+        }
         const int64_t anchor =
             cand >= origin + halfW ? std::min(cand, maxAnchor)
                                    : maxAnchor;
@@ -602,6 +636,10 @@ void ScopeApp::updateScopePlots() {
                 syncedX0_ = x0;
                 syncedX1_ = x1;
                 syncedXValid_ = true;
+                // anchor == cand: the trigger is centered and the
+                // post-trigger half is fully captured — freeze the
+                // sweep until the next accepted trigger.
+                if (anchor == cand) heldSweepPos_ = cand;
             }
         }
         if (!follow_.load(std::memory_order_relaxed)) {
