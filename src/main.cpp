@@ -71,6 +71,10 @@ void addCommonArgs(ArgumentParser& p) {
     p.add_argument("--packets")
         .help("Scope-Overlay-Format: raw oder klipper")
         .default_value(std::string("raw"));
+    p.add_argument("--klipper-dict")
+        .help("Klipper msgid-Dict (JSON oder zlib-JSON) zur "
+              "Namenauflösung von Klipper-Nachrichten")
+        .default_value(std::string(""));
 }
 
 void fillCommon(const ArgumentParser& p, ucan::AppConfig& c) {
@@ -100,6 +104,7 @@ void fillCommon(const ArgumentParser& p, ucan::AppConfig& c) {
     } else {
         throw std::runtime_error("--packets: raw oder klipper erwartet");
     }
+    c.klipperDictPath = p.get<std::string>("--klipper-dict");
 }
 
 } // namespace

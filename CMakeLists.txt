@@ -46,6 +46,7 @@ add_executable(ulican
     src/file/FileStreamer.cpp
     src/log/Loggers.cpp
     src/can/CanDecoder.cpp
+    src/can/KlipperProtocol.cpp
     src/can/LiveDecoder.cpp
     src/can/VirtualTrigger.cpp
     src/ui/MessageListWidget.cpp
@@ -60,6 +61,8 @@ target_include_directories(ulican PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/VolcanoPlot/dependencies/VulkanMemoryAllocator/include
 )
 
+find_package(ZLIB REQUIRED)
+
 target_link_libraries(ulican PRIVATE
     volcano_backend
     volcano_render
@@ -68,6 +71,7 @@ target_link_libraries(ulican PRIVATE
     volcano_text
     PkgConfig::LIBUSB
     Threads::Threads
+    ZLIB::ZLIB
 )
 
 target_compile_definitions(ulican PRIVATE

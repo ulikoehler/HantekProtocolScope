@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../can/KlipperProtocol.hpp"
 #include "../can/LiveDecoder.hpp"
 #include "../can/VirtualTrigger.hpp"
 #include "../device/HantekDevice.hpp"
@@ -24,6 +25,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 namespace ucan {
@@ -51,6 +53,7 @@ struct AppConfig {
     std::string logRawPath;              // raw ADC .bin for `view`
     std::string viewFile;                // non-empty → replay, not capture
     PacketFormat packetFormat = PacketFormat::Raw;
+    std::string klipperDictPath;             // optional msgid dict JSON
 };
 
 /// Live CAN scope: Hantek isochronous stream -> LiveDecoder +
@@ -106,6 +109,9 @@ private:
     SpscQueue<UiEvent, 2048> uiQueue_;
     std::deque<can::TriggerEvent> triggerMarks_;
     std::deque<can::FrameEvent> frameMarks_; // for the packet overlay
+    can::KlipperDict klipperDict_;
+    bool klipperDictLoaded_ = false;
+    std::unordered_map<uint32_t, can::KlipperStream> klipperStreams_;
     MessageListWidget* messageList_ = nullptr;
 
     // Shared UI-adjustable settings (written on UI thread, synced on

@@ -33,6 +33,9 @@ struct FrameEvent {
     double timeUs = 0;
     float recessiveMarginV = 0;
     float dominantMarginV = 0;
+    /// Protocol-layer decode attached by the UI (e.g. Klipper message
+    /// blocks completed by this frame's payload); empty if none.
+    std::string decoded;
 };
 
 /// Trigger event produced by the virtual trigger (holdoff applied).

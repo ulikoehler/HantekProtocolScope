@@ -73,7 +73,8 @@ std::string formatPacketLabel(const can::FrameEvent& fe,
             const int node = static_cast<int>(f.identifier - 256) / 2;
             const bool resp = (f.identifier - 256) & 1;
             return std::format("n{} {} {}", node, resp ? "resp" : "cmd",
-                               hex(0, f.dlc));
+                               fe.decoded.empty() ? hex(0, f.dlc)
+                                                  : fe.decoded);
         }
         return std::format("0x{:03X} {}", f.identifier, hex(0, f.dlc));
     }
@@ -575,6 +576,34 @@ void ScopeApp::uiFrame() {
     UiEvent event;
     while (uiQueue_.pop(event)) {
         if (event.kind == UiEvent::Kind::Frame) {
+            if (config_.packetFormat == PacketFormat::Klipper &&
+                event.frame.frame.identifier >= 256) {
+                if (!klipperDictLoaded_ &&
+                    !config_.klipperDictPath.empty()) {
+                    klipperDictLoaded_ = true;
+                    std::string err;
+                    if (!klipperDict_.load(config_.klipperDictPath, &err))
+                        std::cerr << "ulican: klipper dict: " << err
+                                  << "\n";
+                    else if (config_.stats)
+                        std::cerr << std::format(
+                            "[klipper] dict: {} cmds, {} resps, "
+                            "{} outputs\n",
+                            klipperDict_.commands.size(),
+                            klipperDict_.responses.size(),
+                            klipperDict_.outputs.size());
+                }
+                auto& stream =
+                    klipperStreams_[event.frame.frame.identifier];
+                if (klipperDictLoaded_) stream.setDict(&klipperDict_);
+                for (auto& b : stream.feed(
+                         {event.frame.frame.data.data(),
+                          event.frame.frame.dlc})) {
+                    if (!event.frame.decoded.empty())
+                        event.frame.decoded += "; ";
+                    event.frame.decoded += b.text;
+                }
+            }
             if (messageList_) messageList_->addFrame(event.frame);
             frameMarks_.push_back(event.frame);
             if (frameMarks_.size() > 512) frameMarks_.pop_front();
