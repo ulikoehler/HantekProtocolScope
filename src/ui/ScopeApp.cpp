@@ -326,9 +326,14 @@ int ScopeApp::run() {
     };
 
     // RUN/STOP like a real scope: spacebar freezes the display.
+    // Debounced — GLFW key repeat would toggle continuously.
     figure_->canvas().connect("key_press_event",
                               [this](const vp::Event& e) {
-        if (e.key != " ") return;
+        if (e.key != " " && e.key != "space") return;
+        const auto now = std::chrono::steady_clock::now();
+        if (now - lastSpaceToggle_ < std::chrono::milliseconds(250))
+            return;
+        lastSpaceToggle_ = now;
         paused_.store(!paused_.load(std::memory_order_relaxed),
                       std::memory_order_relaxed);
         if (backend_)
@@ -432,7 +437,6 @@ void ScopeApp::analyzerMain() {
             // the gap (positions stay absolute, samples are compressed).
             decoder_->reset();
             trigger_->reset();
-            latestAccepted_.store(-1, std::memory_order_relaxed);
         }
         expectedSeq = batch->sequence + 1;
 
@@ -450,7 +454,6 @@ void ScopeApp::analyzerMain() {
                            batch->firstSample + static_cast<int64_t>(begin) / 2);
             decoder_->reset();
             trigger_->reset();
-            latestAccepted_.store(-1, std::memory_order_relaxed);
             begin = end;
         }
         processSegment(batch->data.data() + begin, (end - begin) / 2,
@@ -924,7 +927,9 @@ void ScopeApp::updateWidgets() {
     yautoButton_->rect = vp::Rect2D{994, cy, 100, 30};
     clearButton_->rect = vp::Rect2D{1102, cy, 90, 30};
 
-    followButton_->label = follow_.load() ? "Follow: on" : "Follow: off";
+    followButton_->label = paused_.load() ? "STOPPED (space)"
+                               : follow_.load() ? "Follow: on"
+                                                : "Follow: off";
     yautoButton_->label = yAuto_.load() ? "Y-Auto: on" : "Y-Auto: off";
 }
 

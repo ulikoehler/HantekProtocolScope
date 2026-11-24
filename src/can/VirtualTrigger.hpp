@@ -25,7 +25,16 @@ public:
     void setHoldoffUs(double us) {
         holdoffSamples_ = static_cast<int64_t>(us * rateHz_ / 1e6);
     }
+    /// Discontinuity reset (USB gap / packet error): drops the decode
+    /// tail but keeps the absolute watermark and holdoff state —
+    /// candidate positions are absolute, so dedup and holdoff remain
+    /// valid across the gap and no stale position can auto-accept.
     void reset() {
+        tail_.clear();
+    }
+
+    /// Full reset including watermark and holdoff state.
+    void resetAll() {
         tail_.clear();
         evaluatedUpTo_ = -1;
         lastAccepted_ = -1;

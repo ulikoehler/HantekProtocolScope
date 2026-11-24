@@ -180,6 +180,7 @@ private:
     // ms-coordinate base while frozen (live origin at freeze entry).
     int64_t frozenCoordOrigin_ = 0;
     bool wasFrozen_ = false;
+    std::chrono::steady_clock::time_point lastSpaceToggle_{};
     bool lastAutoYTopValid_ = false, lastAutoYDiffValid_ = false;
     double lastAutoYTop0_ = 0, lastAutoYTop1_ = 0;
     double lastAutoYDiff0_ = 0, lastAutoYDiff1_ = 0;
