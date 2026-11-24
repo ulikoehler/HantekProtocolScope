@@ -729,15 +729,18 @@ void ScopeApp::updateScopePlots() {
         // normal holds until the next accept arrives.
         const int64_t holdoffSamples = static_cast<int64_t>(
             holdoffUs_.load(std::memory_order_relaxed) * rateHz_ / 1e6);
+        const bool paused = paused_.load(std::memory_order_relaxed);
         if (cand != lastAcceptSeen_) {
             lastAcceptSeen_ = cand;
-            if (cand >= 0) snapshot_.valid = false; // fresh freeze
+            // Refresh the freeze snapshot on a new accept — but not
+            // while paused: the spacebar snapshot must stay put, or
+            // the picture would keep chasing fresh accepts.
+            if (cand >= 0 && !paused) snapshot_.valid = false;
         }
         const bool holdFrozen =
             cand >= 0 && (trigAuto_.load(std::memory_order_relaxed)
                               ? head < cand + holdoffSamples
                               : true);
-        const bool paused = paused_.load(std::memory_order_relaxed);
         frozen = holdFrozen || paused;
         holdFrozenUi_ = holdFrozen;
         if (frozen && !snapshot_.valid) {
