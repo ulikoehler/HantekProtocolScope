@@ -492,7 +492,8 @@ void ScopeApp::uiFrame() {
             if (messageList_) messageList_->addFrame(event.frame);
             ++framesSeen_;
         } else {
-            if (messageList_) messageList_->addTrigger(event.trigger);
+            // Trigger events feed the scope markers and the JSONL log
+            // only — the message list shows CAN frames exclusively.
             triggerMarks_.push_back(event.trigger);
             if (triggerMarks_.size() > 512) triggerMarks_.pop_front();
             ++triggersSeen_;

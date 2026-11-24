@@ -17,7 +17,6 @@ public:
     MessageListWidget() { rect = {0, 0, 100, 160}; }
 
     void addFrame(const can::FrameEvent& event);
-    void addTrigger(const can::TriggerEvent& event);
     void clear();
 
     bool handleEvent(const volcano::plot::Event& e) override;
@@ -25,7 +24,6 @@ public:
 
 private:
     struct Row {
-        bool isTrigger = false;
         double timeMs = 0;
         uint32_t id = 0;
         uint8_t dlc = 0;
@@ -34,7 +32,6 @@ private:
              domErr = false;
         uint16_t crc = 0;
         float recMargin = 0, domMargin = 0;
-        const char* triggerReason = nullptr;
     };
 
     std::deque<Row> rows_;

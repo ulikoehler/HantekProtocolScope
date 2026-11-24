@@ -10,7 +10,6 @@ namespace vp = volcano::plot;
 
 void MessageListWidget::addFrame(const can::FrameEvent& event) {
     Row row;
-    row.isTrigger = false;
     row.timeMs = event.timeUs / 1000.0;
     row.id = event.frame.identifier;
     row.dlc = event.frame.dlc;
@@ -22,15 +21,6 @@ void MessageListWidget::addFrame(const can::FrameEvent& event) {
     row.crc = event.frame.crc;
     row.recMargin = event.recessiveMarginV;
     row.domMargin = event.dominantMarginV;
-    rows_.push_front(row);
-    if (rows_.size() > kMaxRows) rows_.pop_back();
-}
-
-void MessageListWidget::addTrigger(const can::TriggerEvent& event) {
-    Row row;
-    row.isTrigger = true;
-    row.timeMs = event.timeUs / 1000.0;
-    row.triggerReason = event.reasonText();
     rows_.push_front(row);
     if (rows_.size() > kMaxRows) rows_.pop_back();
 }
@@ -70,7 +60,6 @@ void MessageListWidget::draw(vp::WidgetPainter& p) {
     const vp::Color kOk = vp::Color::fromRgba8(120, 220, 140);
     const vp::Color kWarn = vp::Color::fromRgba8(240, 200, 90);
     const vp::Color kBad = vp::Color::fromRgba8(240, 110, 100);
-    const vp::Color kTrig = vp::Color::fromRgba8(240, 160, 60);
     const vp::Color kFg = vp::Color::fromRgba8(220, 224, 232);
 
     // Column layout (fractions of w).
@@ -102,12 +91,6 @@ void MessageListWidget::draw(vp::WidgetPainter& p) {
          ++r) {
         const Row& row = rows_[scroll_ + r];
         const float ry = rowTop + r * kRowH + kRowH * 0.5f + 4.0f;
-        if (row.isTrigger) {
-            p.text(std::format("TRIGGER {:<14} {:>10.3f}", row.triggerReason,
-                               row.timeMs),
-                   colX(0), ry, kTrig, 0.75f);
-            continue;
-        }
         const bool ok = row.ack && row.ackDelimOk && row.eofOk && !row.domErr;
         const vp::Color status =
             ok ? kOk : (!row.ack ? kWarn : kBad);
