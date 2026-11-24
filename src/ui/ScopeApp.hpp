@@ -112,6 +112,9 @@ private:
     // RUN/STOP (spacebar): freezes traces, markers and message list —
     // acquisition, decoding and logging continue in the background.
     std::atomic<bool> paused_{false};
+    // Trigger sweep mode: normal = held until the next accepted
+    // trigger; auto = held sweep times out into live-edge free-run.
+    std::atomic<bool> trigAuto_{true};
     // Newest holdoff-accepted trigger candidate (absolute sample) —
     // written by the analyzer thread, read by the UI for centering.
     // Holdoff gates ONLY this view anchor; trigger events are unfiltered.
@@ -136,6 +139,7 @@ private:
     volcano::plot::Button* followButton_ = nullptr;
     volcano::plot::Button* yautoButton_ = nullptr;
     volcano::plot::Button* clearButton_ = nullptr;
+    volcano::plot::Button* autoButton_ = nullptr;
 
     // UI-side state
     std::atomic<bool> yAuto_{true};
@@ -148,6 +152,34 @@ private:
     // Position of the accepted trigger whose sweep is held frozen on
     // screen (holdoff semantics); -1 = not held.
     int64_t heldSweepPos_ = -1;
+    // Auto mode: candidate whose held sweep already timed out, so it is
+    // not re-held; -1 = none.
+    int64_t timedOutCand_ = -1;
+    // Copied at freeze entry so zoom/pan resolves real samples while
+    // the live buffer scrolls on.
+    struct Snapshot {
+        bool valid = false;
+        int64_t origin = 0, head = 0;
+        std::array<std::vector<float>, 3> ch;
+        size_t extract(int c, int64_t first, size_t n,
+                       std::vector<float>& out) const {
+            out.clear();
+            const int64_t f = std::max(first, origin);
+            const int64_t l =
+                std::min(first + static_cast<int64_t>(n), head);
+            if (l <= f) return 0;
+            const auto& v = ch[static_cast<size_t>(c)];
+            const size_t off = static_cast<size_t>(f - origin);
+            const size_t cnt =
+                std::min(static_cast<size_t>(l - f), v.size() - off);
+            out.assign(v.begin() + off, v.begin() + off + cnt);
+            return cnt;
+        }
+    };
+    Snapshot snapshot_;
+    // ms-coordinate base while frozen (live origin at freeze entry).
+    int64_t frozenCoordOrigin_ = 0;
+    bool wasFrozen_ = false;
     bool lastAutoYTopValid_ = false, lastAutoYDiffValid_ = false;
     double lastAutoYTop0_ = 0, lastAutoYTop1_ = 0;
     double lastAutoYDiff0_ = 0, lastAutoYDiff1_ = 0;

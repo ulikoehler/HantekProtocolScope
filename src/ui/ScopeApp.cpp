@@ -243,25 +243,27 @@ int ScopeApp::run() {
         return vp::Rect2D{x, y, w, h};
     };
     thrSlider_ = figure_->addWidget<vp::Slider>(
-        rect(16, 0, 240, 30), "Trigger V", 0.05f, 5.0f,
+        rect(16, 0, 200, 30), "Trigger V", 0.05f, 5.0f,
         config_.thresholdV, 0);
     // Logarithmic stepped holdoff: slider 0..35 maps to
     // 10^(0.2*v) µs → 1 µs … 10 s in 36 detents (1-2-5 scheme).
     holdoffSlider_ = figure_->addWidget<vp::Slider>(
-        rect(280, 0, 240, 30), "", 0.0f, 35.0f,
+        rect(224, 0, 200, 30), "", 0.0f, 35.0f,
         static_cast<float>(std::log10(
             std::clamp(config_.holdoffUs, 1.0, 1e7)) /
             0.2),
         35);
-    bitrateButton_ = figure_->addWidget<vp::Button>(rect(544, 0, 150, 30), "");
+    bitrateButton_ = figure_->addWidget<vp::Button>(rect(432, 0, 140, 30), "");
     modeButton_ =
-        figure_->addWidget<vp::Button>(rect(704, 0, 170, 30), "");
+        figure_->addWidget<vp::Button>(rect(580, 0, 160, 30), "");
+    autoButton_ =
+        figure_->addWidget<vp::Button>(rect(748, 0, 120, 30), "");
     followButton_ =
-        figure_->addWidget<vp::Button>(rect(884, 0, 120, 30), "");
+        figure_->addWidget<vp::Button>(rect(876, 0, 110, 30), "");
     yautoButton_ =
-        figure_->addWidget<vp::Button>(rect(1014, 0, 110, 30), "Y-Auto");
+        figure_->addWidget<vp::Button>(rect(994, 0, 100, 30), "Y-Auto");
     clearButton_ =
-        figure_->addWidget<vp::Button>(rect(1134, 0, 100, 30), "Clear");
+        figure_->addWidget<vp::Button>(rect(1102, 0, 90, 30), "Clear");
 
     thrSlider_->onChanged = [this](float v) { threshold_.store(v); };
     holdoffSlider_->onChanged = [this](float v) {
@@ -279,6 +281,12 @@ int ScopeApp::run() {
         modeButton_->label = triggerMode_.load() ? "Trigger: dominant"
                                                  : "Trigger: error";
     };
+    autoButton_->onClick = [this] {
+        trigAuto_.store(!trigAuto_.load());
+        timedOutCand_ = -1;
+        autoButton_->label = trigAuto_.load() ? "Trig: auto"
+                                              : "Trig: normal";
+    };
     followButton_->onClick = [this] {
         follow_.store(!follow_.load());
     };
@@ -289,6 +297,10 @@ int ScopeApp::run() {
     };
     clearButton_->onClick = [this] {
         if (messageList_) messageList_->clear();
+        // Force re-arm: drop the held sweep and its snapshot.
+        heldSweepPos_ = -1;
+        timedOutCand_ = -1;
+        snapshot_.valid = false;
     };
     for (size_t i = 0; i < kBitrates.size(); ++i)
         if (kBitrates[i] == config_.bitrate) bitrateIndex_ = int(i);
@@ -296,6 +308,7 @@ int ScopeApp::run() {
     modeButton_->label = config_.triggerMode == can::VirtualTrigger::Mode::Error
                              ? "Trigger: error"
                              : "Trigger: dominant";
+    autoButton_->label = "Trig: auto";
     followButton_->label = "Follow: on";
     yautoButton_->label = "Y-Auto: on";
     holdoffSlider_->label = "Holdoff " + formatUs(config_.holdoffUs);
@@ -500,11 +513,13 @@ void ScopeApp::processSegment(const uint8_t* bytes, size_t sampleCount,
 
 void ScopeApp::uiFrame() {
     if (paused_.load(std::memory_order_relaxed)) {
-        // STOP: discard analyzer events so the display, message list and
-        // markers stay frozen; acquisition continues in the background.
+        // STOP: discard analyzer events so the message list and markers
+        // stay frozen; the scope view still runs on the snapshot taken
+        // at pause time (navigable), acquisition continues behind it.
         UiEvent ev;
         while (uiQueue_.pop(ev)) {
         }
+        updateScopePlots();
         updateWidgets();
         return;
     }
@@ -578,43 +593,71 @@ void ScopeApp::updateScopePlots() {
 
     // ---- X viewport --------------------------------------------------
     // Trigger-centered view (scope semantics): the anchor is the newest
-    // holdoff-accepted trigger that can still be centered inside the
-    // retained buffer. Once that window is fully populated the whole
-    // picture freezes (held sweep) until the NEXT accepted trigger —
-    // holdoff gates exactly this update. Manual navigation breaks the
-    // hold. The trigger event stream itself runs continuously.
+    // holdoff-accepted trigger. Once the centered window is fully
+    // populated the sweep is held (normal: until the next accept; auto:
+    // plus timeout). While held or paused the display buffers are
+    // snapshotted so zoom/pan resolves real samples — the frozen
+    // picture stays fully navigable. The trigger event stream itself
+    // runs continuously.
     double vx0 = 0.0, vx1 = windowMs;
     double anchorMs = -1.0;
+    bool frozen = false;
     if (axesTop_ && axesDiff_ && head > origin) {
         const int64_t halfW =
             static_cast<int64_t>(windowSamples_ / 2);
         const int64_t maxAnchor = head - halfW;
         const int64_t cand =
             latestAccepted_.load(std::memory_order_relaxed);
-        if (heldSweepPos_ >= 0 && cand == heldSweepPos_) {
-            const auto t = axesTop_->xlim();
-            const auto d = axesDiff_->xlim();
-            const bool manual =
-                std::fabs(t.min - lastAutoX0_) > 0.02 ||
-                std::fabs(t.max - lastAutoX1_) > 0.02 ||
-                std::fabs(d.min - lastAutoX0_) > 0.02 ||
-                std::fabs(d.max - lastAutoX1_) > 0.02;
-            if (!manual) return; // frozen sweep — nothing updates
-            follow_.store(false, std::memory_order_relaxed);
+
+        // ---- freeze management ----
+        if (heldSweepPos_ >= 0 && cand != heldSweepPos_)
+            heldSweepPos_ = -1; // released by a newer accept
+        // AUTO: a held sweep times out into live-edge free-run.
+        const int64_t autoTimeout =
+            std::max<int64_t>(3 * static_cast<int64_t>(windowSamples_),
+                              static_cast<int64_t>(rateHz_ / 4));
+        if (heldSweepPos_ >= 0 &&
+            trigAuto_.load(std::memory_order_relaxed) &&
+            head - heldSweepPos_ > autoTimeout) {
+            timedOutCand_ = heldSweepPos_;
             heldSweepPos_ = -1;
-            syncedXValid_ = false;
         }
+        const bool held = heldSweepPos_ >= 0;
+        const bool paused = paused_.load(std::memory_order_relaxed);
+        frozen = held || paused;
+        if (frozen && !wasFrozen_) frozenCoordOrigin_ = origin;
+        if (frozen && !snapshot_.valid) {
+            // Copy the data at freeze time; a held sweep keeps its
+            // trigger window, a pause keeps the whole buffer.
+            const int64_t f0 =
+                held ? heldSweepPos_ - halfW : origin;
+            const int64_t f1 =
+                held ? heldSweepPos_ + halfW : head;
+            std::lock_guard lock(displayMutex_);
+            for (int c = 0; c < 3; ++c)
+                chanBuffers_[static_cast<size_t>(c)]->extractRange(
+                    f0, static_cast<size_t>(f1 - f0),
+                    snapshot_.ch[static_cast<size_t>(c)]);
+            snapshot_.origin = f0;
+            snapshot_.head =
+                f0 + static_cast<int64_t>(snapshot_.ch[0].size());
+            snapshot_.valid = true;
+        }
+        if (!frozen) snapshot_.valid = false;
+        wasFrozen_ = frozen;
+
         const int64_t anchor =
             cand >= origin + halfW ? std::min(cand, maxAnchor)
                                    : maxAnchor;
-        anchorMs = (anchor - origin) * msPerSample;
+        // The trigger line keeps its last position while frozen.
+        anchorMs = frozen ? -1.0 : (anchor - origin) * msPerSample;
         double x0 = anchorMs - windowMs * 0.5;
         double x1 = anchorMs + windowMs * 0.5;
         if (x0 < 0.0) {
             x1 -= x0;
             x0 = 0.0;
         }
-        if (follow_.load(std::memory_order_relaxed)) {
+        if (!frozen && follow_.load(std::memory_order_relaxed)) {
             const auto t = axesTop_->xlim();
             const auto d = axesDiff_->xlim();
             const bool manual =
@@ -637,12 +680,14 @@ void ScopeApp::updateScopePlots() {
                 syncedX1_ = x1;
                 syncedXValid_ = true;
                 // anchor == cand: the trigger is centered and the
-                // post-trigger half is fully captured — freeze the
-                // sweep until the next accepted trigger.
-                if (anchor == cand) heldSweepPos_ = cand;
+                // post-trigger half is fully captured — hold the
+                // sweep until the next accepted trigger (or the
+                // auto timeout).
+                if (anchor == cand && cand != timedOutCand_)
+                    heldSweepPos_ = cand;
             }
         }
-        if (!follow_.load(std::memory_order_relaxed)) {
+        if (frozen || !follow_.load(std::memory_order_relaxed)) {
             const auto t = axesTop_->xlim();
             const auto d = axesDiff_->xlim();
             if (!syncedXValid_) {
@@ -669,18 +714,24 @@ void ScopeApp::updateScopePlots() {
         vx1 = cur.max;
     }
 
+    // While frozen the x coordinates stay anchored to the origin that
+    // was live at freeze time; data comes from the snapshot then.
+    const int64_t coordBase = frozen ? frozenCoordOrigin_ : origin;
+    const int64_t dataOrigin = frozen ? snapshot_.origin : origin;
+    const int64_t dataEnd = frozen ? snapshot_.head : head;
+
     // Visible absolute-index range from the x viewport (ms → samples).
     int64_t vFirst =
-        origin + static_cast<int64_t>(std::floor(vx0 / msPerSample));
+        coordBase + static_cast<int64_t>(std::floor(vx0 / msPerSample));
     int64_t vLast =
-        origin + static_cast<int64_t>(std::ceil(vx1 / msPerSample));
-    vFirst = std::max<int64_t>(vFirst, origin);
-    vLast = std::min<int64_t>(vLast, head);
+        coordBase + static_cast<int64_t>(std::ceil(vx1 / msPerSample));
+    vFirst = std::max<int64_t>(vFirst, dataOrigin);
+    vLast = std::min<int64_t>(vLast, dataEnd);
 
     // Re-decimate only when the view changed or reaches into the live
     // edge; a static historical view keeps its last decimation.
     const bool dirty = vLast <= vFirst || vFirst != decVF_ ||
-                       vLast != decVL_ || origin != decOrigin_ ||
+                       vLast != decVL_ || coordBase != decOrigin_ ||
                        vLast >= decHead_;
     const int64_t viewSpan = vLast - vFirst;
 
@@ -690,14 +741,18 @@ void ScopeApp::updateScopePlots() {
     if (dirty && canhMinLine_ && minLine_) {
         decVF_ = vFirst;
         decVL_ = vLast;
-        decOrigin_ = origin;
-        decHead_ = head;
+        decOrigin_ = coordBase;
+        decHead_ = dataEnd;
         bool any = false;
         if (viewSpan > 0) {
             const auto extent = backend_->extent();
             for (int ch = 0; ch < 3; ++ch) {
                 size_t cnt = 0;
-                {
+                if (frozen) {
+                    cnt = snapshot_.extract(
+                        ch, vFirst, static_cast<size_t>(viewSpan),
+                        window_);
+                } else {
                     std::lock_guard lock(displayMutex_);
                     cnt = chanBuffers_[ch]->extractRange(
                         vFirst, static_cast<size_t>(viewSpan), window_);
@@ -723,7 +778,7 @@ void ScopeApp::updateScopePlots() {
                         h = std::max(h, window_[i]);
                     }
                     const double mid = vFirst + (i0 + i1) * 0.5;
-                    xs_[c] = static_cast<float>((mid - origin) *
+                    xs_[c] = static_cast<float>((mid - coordBase) *
                                                 msPerSample);
                     lo[c] = l;
                     hi[c] = h;
@@ -818,14 +873,14 @@ void ScopeApp::updateScopePlots() {
     // Trigger markers inside the retained buffer, on both scopes.
     if (markerLine_ || markerTopLine_) {
         while (!triggerMarks_.empty() &&
-               triggerMarks_.front().position < bufferOrigin_)
+               triggerMarks_.front().position < dataOrigin)
             triggerMarks_.pop_front();
         std::vector<float> mx;
         mx.reserve(triggerMarks_.size());
         for (const auto& ev : triggerMarks_) {
-            if (ev.position > bufferHead_) continue;
+            if (ev.position > dataEnd) continue;
             mx.push_back(static_cast<float>(
-                (ev.position - bufferOrigin_) * msPerSample));
+                (ev.position - coordBase) * msPerSample));
         }
         const size_t n = mx.size();
         const auto markYs = [](vp::Axes* ax, size_t count) {
@@ -860,13 +915,14 @@ void ScopeApp::updateWidgets() {
 
     const int32_t cy = static_cast<int32_t>(h) - kListHeight -
                        kControlHeight + 4;
-    thrSlider_->rect = vp::Rect2D{16, cy, 240, 30};
-    holdoffSlider_->rect = vp::Rect2D{280, cy, 240, 30};
-    bitrateButton_->rect = vp::Rect2D{544, cy, 150, 30};
-    modeButton_->rect = vp::Rect2D{704, cy, 170, 30};
-    followButton_->rect = vp::Rect2D{884, cy, 120, 30};
-    yautoButton_->rect = vp::Rect2D{1014, cy, 110, 30};
-    clearButton_->rect = vp::Rect2D{1134, cy, 100, 30};
+    thrSlider_->rect = vp::Rect2D{16, cy, 200, 30};
+    holdoffSlider_->rect = vp::Rect2D{224, cy, 200, 30};
+    bitrateButton_->rect = vp::Rect2D{432, cy, 140, 30};
+    modeButton_->rect = vp::Rect2D{580, cy, 160, 30};
+    autoButton_->rect = vp::Rect2D{748, cy, 120, 30};
+    followButton_->rect = vp::Rect2D{876, cy, 110, 30};
+    yautoButton_->rect = vp::Rect2D{994, cy, 100, 30};
+    clearButton_->rect = vp::Rect2D{1102, cy, 90, 30};
 
     followButton_->label = follow_.load() ? "Follow: on" : "Follow: off";
     yautoButton_->label = yAuto_.load() ? "Y-Auto: on" : "Y-Auto: off";
