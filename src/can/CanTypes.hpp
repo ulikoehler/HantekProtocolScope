@@ -42,11 +42,14 @@ struct FrameEvent {
 struct TriggerEvent {
     int64_t position = 0;      // absolute sample index
     double timeUs = 0;
-    enum class Reason : uint8_t { LongDominant, MissingAck } reason =
+    enum class Reason : uint8_t { Sof, LongDominant, MissingAck } reason =
         Reason::LongDominant;
     [[nodiscard]] const char* reasonText() const noexcept {
-        return reason == Reason::LongDominant ? "long_dominant"
-                                              : "missing_ack";
+        switch (reason) {
+            case Reason::Sof: return "sof";
+            case Reason::LongDominant: return "long_dominant";
+            default: return "missing_ack";
+        }
     }
 };
 

@@ -86,9 +86,7 @@ ScopeApp::ScopeApp(AppConfig config) : config_(std::move(config)) {
     bitrate_.store(config_.bitrate);
     threshold_.store(config_.thresholdV);
     holdoffUs_.store(config_.holdoffUs);
-    triggerMode_.store(config_.triggerMode == can::VirtualTrigger::Mode::Error
-                           ? 0
-                           : 1);
+    triggerMode_.store(static_cast<int>(config_.triggerMode));
 }
 
 ScopeApp::~ScopeApp() {
@@ -324,13 +322,13 @@ int ScopeApp::run() {
         bitrateButton_->label = kBitrateLabels[bitrateIndex_];
     };
     modeButton_->onClick = [this] {
-        triggerMode_.store(1 - triggerMode_.load());
-        modeButton_->label = triggerMode_.load() ? "Trigger: dominant"
-                                                 : "Trigger: error";
+        triggerMode_.store((triggerMode_.load() + 1) % 3);
+        static const char* names[3] = {"Trigger: sof", "Trigger: error",
+                                       "Trigger: dominant"};
+        modeButton_->label = names[triggerMode_.load() % 3];
     };
     autoButton_->onClick = [this] {
         trigAuto_.store(!trigAuto_.load());
-        timedOutCand_ = -1;
         autoButton_->label = trigAuto_.load() ? "Trig: auto"
                                               : "Trig: normal";
     };
@@ -344,17 +342,18 @@ int ScopeApp::run() {
     };
     clearButton_->onClick = [this] {
         if (messageList_) messageList_->clear();
-        // Force re-arm: drop the held sweep and its snapshot.
-        heldSweepPos_ = -1;
-        timedOutCand_ = -1;
+        // Force re-arm: drop the freeze and its snapshot.
+        lastAcceptSeen_ = -1;
+        holdoffUntil_ = {};
         snapshot_.valid = false;
     };
     for (size_t i = 0; i < kBitrates.size(); ++i)
         if (kBitrates[i] == config_.bitrate) bitrateIndex_ = int(i);
     bitrateButton_->label = kBitrateLabels[bitrateIndex_];
-    modeButton_->label = config_.triggerMode == can::VirtualTrigger::Mode::Error
-                             ? "Trigger: error"
-                             : "Trigger: dominant";
+    static const char* kTriggerNames[3] = {
+        "Trigger: sof", "Trigger: error", "Trigger: dominant"};
+    modeButton_->label =
+        kTriggerNames[static_cast<int>(config_.triggerMode) % 3];
     autoButton_->label = "Trig: auto";
     followButton_->label = "Follow: on";
     yautoButton_->label = "Y-Auto: on";
@@ -376,6 +375,23 @@ int ScopeApp::run() {
     // Debounced — GLFW key repeat would toggle continuously.
     figure_->canvas().connect("key_press_event",
                               [this](const vp::Event& e) {
+        if (e.key == "r" || e.key == "R") {
+            // Screen reset: resume, drop freeze+snapshot, re-enable
+            // follow + Y-auto, force re-center/refit next frame.
+            paused_.store(false, std::memory_order_relaxed);
+            lastAcceptSeen_ = -1;
+            holdoffUntil_ = {};
+            snapshot_.valid = false;
+            wasFrozen_ = false;
+            follow_.store(true, std::memory_order_relaxed);
+            yAuto_.store(true, std::memory_order_relaxed);
+            lastAutoValid_ = false;
+            syncedXValid_ = false;
+            lastAutoYTopValid_ = false;
+            lastAutoYDiffValid_ = false;
+            titleMode_ = -1;
+            return;
+        }
         if (e.key != " " && e.key != "space") return;
         const auto now = std::chrono::steady_clock::now();
         if (now - lastSpaceToggle_ < std::chrono::milliseconds(250))
@@ -519,9 +535,8 @@ void ScopeApp::processSegment(const uint8_t* bytes, size_t sampleCount,
     decoder_->setBitrate(br);
     trigger_->setThreshold(thr);
     trigger_->setBitrate(br);
-    trigger_->setMode(triggerMode_.load(std::memory_order_relaxed)
-                          ? can::VirtualTrigger::Mode::Dominant
-                          : can::VirtualTrigger::Mode::Error);
+    trigger_->setMode(static_cast<can::VirtualTrigger::Mode>(
+        triggerMode_.load(std::memory_order_relaxed) % 3));
     trigger_->setHoldoffUs(holdoffUs_.load(std::memory_order_relaxed));
 
     // Calibrated channel voltages: v_i = vpc_i * (adc_i - oc_i).
@@ -562,12 +577,29 @@ void ScopeApp::processSegment(const uint8_t* bytes, size_t sampleCount,
 // ---------------------------------------------------------------------
 
 void ScopeApp::uiFrame() {
-    if (paused_.load(std::memory_order_relaxed)) {
-        // STOP: discard analyzer events so the message list and markers
-        // stay frozen; the scope view still runs on the snapshot taken
-        // at pause time (navigable), acquisition continues behind it.
+    const bool paused = paused_.load(std::memory_order_relaxed);
+    if (paused) {
+        // STOP: the scope/markers stay frozen on the snapshot taken
+        // at pause time, but decoded CAN frames keep flowing into
+        // the message list (and the Klipper streams stay in sync).
         UiEvent ev;
         while (uiQueue_.pop(ev)) {
+            if (ev.kind != UiEvent::Kind::Frame) continue;
+            if (config_.packetFormat == PacketFormat::Klipper &&
+                ev.frame.frame.identifier >= 256) {
+                auto& stream =
+                    klipperStreams_[ev.frame.frame.identifier];
+                if (klipperDictLoaded_) stream.setDict(&klipperDict_);
+                for (auto& b : stream.feed(
+                         {ev.frame.frame.data.data(),
+                          ev.frame.frame.dlc})) {
+                    if (!ev.frame.decoded.empty())
+                        ev.frame.decoded += "; ";
+                    ev.frame.decoded += b.text;
+                }
+            }
+            if (messageList_) messageList_->addFrame(ev.frame);
+            ++framesSeen_;
         }
         updateScopePlots();
         updateWidgets();
@@ -690,29 +722,32 @@ void ScopeApp::updateScopePlots() {
             latestAccepted_.load(std::memory_order_relaxed);
 
         // ---- freeze management ----
-        if (heldSweepPos_ >= 0 && cand != heldSweepPos_)
-            heldSweepPos_ = -1; // released by a newer accept
-        // AUTO: a held sweep times out into live-edge free-run.
-        const int64_t autoTimeout =
-            std::max<int64_t>(3 * static_cast<int64_t>(windowSamples_),
-                              static_cast<int64_t>(rateHz_ / 4));
-        if (heldSweepPos_ >= 0 &&
-            trigAuto_.load(std::memory_order_relaxed) &&
-            head - heldSweepPos_ > autoTimeout) {
-            timedOutCand_ = heldSweepPos_;
-            heldSweepPos_ = -1;
+        // Every newly accepted trigger pauses the screen for the
+        // holdoff duration — like spacebar, but titled HOLDOFF.
+        // Auto releases at holdoffUntil_, normal holds until the
+        // next accept arrives.
+        const auto now = std::chrono::steady_clock::now();
+        if (cand != lastAcceptSeen_) {
+            lastAcceptSeen_ = cand;
+            if (cand >= 0) {
+                holdoffUntil_ =
+                    now + std::chrono::microseconds(static_cast<int64_t>(
+                              holdoffUs_.load(std::memory_order_relaxed)));
+                snapshot_.valid = false; // fresh freeze snapshot
+            }
         }
-        const bool held = heldSweepPos_ >= 0;
+        const bool holdFrozen =
+            cand >= 0 && (trigAuto_.load(std::memory_order_relaxed)
+                              ? now < holdoffUntil_
+                              : true);
         const bool paused = paused_.load(std::memory_order_relaxed);
-        frozen = held || paused;
+        frozen = holdFrozen || paused;
+        holdFrozenUi_ = holdFrozen;
         if (frozen && !wasFrozen_) frozenCoordOrigin_ = origin;
         if (frozen && !snapshot_.valid) {
-            // Copy the data at freeze time; a held sweep keeps its
-            // trigger window, a pause keeps the whole buffer.
-            const int64_t f0 =
-                held ? heldSweepPos_ - halfW : origin;
-            const int64_t f1 =
-                held ? heldSweepPos_ + halfW : head;
+            // Copy the whole buffer at freeze time so zoom/pan
+            // resolves real samples while acquisition runs on.
+            const int64_t f0 = origin, f1 = head;
             std::lock_guard lock(displayMutex_);
             for (int c = 0; c < 3; ++c)
                 chanBuffers_[static_cast<size_t>(c)]->extractRange(
@@ -759,12 +794,6 @@ void ScopeApp::updateScopePlots() {
                 syncedX0_ = x0;
                 syncedX1_ = x1;
                 syncedXValid_ = true;
-                // anchor == cand: the trigger is centered and the
-                // post-trigger half is fully captured — hold the
-                // sweep until the next accepted trigger (or the
-                // auto timeout).
-                if (anchor == cand && cand != timedOutCand_)
-                    heldSweepPos_ = cand;
             }
         }
         if (frozen || !follow_.load(std::memory_order_relaxed)) {
@@ -1085,9 +1114,18 @@ void ScopeApp::updateWidgets() {
     yautoButton_->rect = vp::Rect2D{994, cy, 100, 30};
     clearButton_->rect = vp::Rect2D{1102, cy, 90, 30};
 
-    followButton_->label = paused_.load() ? "STOPPED (space)"
-                               : follow_.load() ? "Follow: on"
-                                                : "Follow: off";
+    const int mode = paused_.load() ? 1 : holdFrozenUi_ ? 2 : 0;
+    if (mode != titleMode_) {
+        titleMode_ = mode;
+        if (backend_)
+            backend_->setWindowTitle(
+                mode == 1 ? "UliCAN — STOPPED (space to run)"
+                          : mode == 2 ? "UliCAN — HOLDOFF"
+                                      : "UliCAN");
+    }
+    followButton_->label = mode == 1 ? "STOPPED (space)"
+                       : mode == 2 ? "HOLDOFF"
+                       : follow_.load() ? "Follow: on" : "Follow: off";
     yautoButton_->label = yAuto_.load() ? "Y-Auto: on" : "Y-Auto: off";
 }
 

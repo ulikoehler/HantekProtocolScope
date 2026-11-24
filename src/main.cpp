@@ -40,8 +40,8 @@ void addCommonArgs(ArgumentParser& p) {
         .scan<'g', double>()
         .default_value(1000.0);
     p.add_argument("--trigger")
-        .help("error | dominant (Standard: error)")
-        .default_value(std::string("error"));
+        .help("sof | error | dominant (Standard: sof)")
+        .default_value(std::string("sof"));
     p.add_argument("--window-ms")
         .help("angezeigte Zeitbasis in ms (Standard: 20)")
         .scan<'g', double>()
@@ -82,12 +82,15 @@ void fillCommon(const ArgumentParser& p, ucan::AppConfig& c) {
     c.thresholdV = static_cast<float>(p.get<double>("--threshold"));
     c.holdoffUs = p.get<double>("--holdoff-us");
     const std::string mode = p.get<std::string>("--trigger");
-    if (mode == "error") {
+    if (mode == "sof") {
+        c.triggerMode = ucan::can::VirtualTrigger::Mode::Sof;
+    } else if (mode == "error") {
         c.triggerMode = ucan::can::VirtualTrigger::Mode::Error;
     } else if (mode == "dominant") {
         c.triggerMode = ucan::can::VirtualTrigger::Mode::Dominant;
     } else {
-        throw std::runtime_error("--trigger: error oder dominant erwartet");
+        throw std::runtime_error(
+            "--trigger: sof, error oder dominant erwartet");
     }
     c.windowMs = p.get<double>("--window-ms");
     c.width = static_cast<uint32_t>(p.get<int>("--width"));

@@ -31,10 +31,21 @@ std::vector<TriggerEvent> VirtualTrigger::scan(
     };
     std::vector<Candidate> candidates;
 
-    for (const auto& [a, b] :
-         longDominantRuns(window, threshold_, minDominantSamples_, true)) {
-        (void)b;
-        candidates.push_back({base + a, TriggerEvent::Reason::LongDominant});
+    if (mode_ == Mode::Sof) {
+        // SOF trigger: one candidate per decoded frame start.
+        for (const CanFrame& frame : decodeCapture(
+                 window, rateHz_, bitrate_, threshold_, true)) {
+            candidates.push_back(
+                {base + frame.start, TriggerEvent::Reason::Sof});
+        }
+    } else {
+        for (const auto& [a, b] :
+             longDominantRuns(window, threshold_, minDominantSamples_,
+                              true)) {
+            (void)b;
+            candidates.push_back(
+                {base + a, TriggerEvent::Reason::LongDominant});
+        }
     }
     if (mode_ == Mode::Error) {
         for (const CanFrame& frame :

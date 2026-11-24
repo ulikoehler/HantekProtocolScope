@@ -41,7 +41,7 @@ struct AppConfig {
     uint32_t bitrate = 1'000'000;
     float thresholdV = 1.1f;
     double holdoffUs = 1000.0;
-    can::VirtualTrigger::Mode triggerMode = can::VirtualTrigger::Mode::Error;
+    can::VirtualTrigger::Mode triggerMode = can::VirtualTrigger::Mode::Sof;
     double windowMs = 20.0;
     size_t displayCapacity = 0; // 0 → derived from rateHz in run()
     uint32_t width = 1600;
@@ -163,12 +163,13 @@ private:
     // common value so manual nav on either axes can be mirrored.
     bool syncedXValid_ = false;
     double syncedX0_ = 0, syncedX1_ = 0;
-    // Position of the accepted trigger whose sweep is held frozen on
-    // screen (holdoff semantics); -1 = not held.
-    int64_t heldSweepPos_ = -1;
-    // Auto mode: candidate whose held sweep already timed out, so it is
-    // not re-held; -1 = none.
-    int64_t timedOutCand_ = -1;
+    // Holdoff freeze: on every newly accepted trigger the screen
+    // pauses for the holdoff duration (auto) resp. until the next
+    // accept (normal) — same effect as spacebar, title says HOLDOFF.
+    std::chrono::steady_clock::time_point holdoffUntil_{};
+    int64_t lastAcceptSeen_ = -1;
+    bool holdFrozenUi_ = false;   // frozen-by-holdoff state for title
+    int titleMode_ = -1;          // 0=live 1=stopped 2=holdoff
     // Copied at freeze entry so zoom/pan resolves real samples while
     // the live buffer scrolls on.
     struct Snapshot {

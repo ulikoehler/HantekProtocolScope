@@ -14,10 +14,10 @@ namespace ucan::can {
 /// missing ACK. Maintains its own overlap tail like LiveDecoder.
 class VirtualTrigger {
 public:
-    enum class Mode : uint8_t { Error, Dominant };
+    enum class Mode : uint8_t { Sof, Error, Dominant };
 
     VirtualTrigger(double rateHz, uint32_t bitrate, float thresholdV,
-                   Mode mode = Mode::Error, double holdoffUs = 0.0);
+                   Mode mode = Mode::Sof, double holdoffUs = 0.0);
 
     void setThreshold(float v) { threshold_ = v; }
     void setBitrate(uint32_t v) { bitrate_ = v; samplesPerBit_ = rateHz_ / v; }
