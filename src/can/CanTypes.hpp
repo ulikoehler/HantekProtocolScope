@@ -29,6 +29,7 @@ struct CanFrame {
 struct FrameEvent {
     CanFrame frame;
     int64_t position = 0;      // absolute sample index of frame.start
+    int64_t end = 0;           // absolute sample index past frame end
     double timeUs = 0;
     float recessiveMarginV = 0;
     float dominantMarginV = 0;

@@ -13,6 +13,7 @@
 #include <volcano/backend/Backend.hpp>
 #include <volcano/plot/Plot.hpp>
 #include <volcano/plot/plots/LinePlot.hpp>
+#include <volcano/plot/plots/ReferenceLines.hpp>
 #include <volcano/render/Renderer.hpp>
 
 #include <array>
@@ -137,6 +138,8 @@ private:
         *thrLine_ = nullptr, *limLoLine_ = nullptr, *limHiLine_ = nullptr,
         *markerLine_ = nullptr, *markerTopLine_ = nullptr,
         *trigLineTop_ = nullptr, *trigLineDiff_ = nullptr;
+    volcano::plot::Vlines *frameEdgesOk_ = nullptr,
+                          *frameEdgesBad_ = nullptr;
     volcano::plot::Slider* thrSlider_ = nullptr;
     volcano::plot::Slider* holdoffSlider_ = nullptr;
     volcano::plot::Button* bitrateButton_ = nullptr;

@@ -57,6 +57,9 @@ void LiveDecoder::analyze(std::span<const float> differential,
             FrameEvent event;
             event.frame = frame;
             event.position = position;
+            // Frame end: ACK slot + ACK delimiter + 7 EOF + ~2 guard bits.
+            event.end = position + static_cast<int64_t>(
+                                      (frame.ackBit + 10) * samplesPerBit_);
             event.timeUs = position * 1e6 / rateHz_;
             event.recessiveMarginV = recessive;
             event.dominantMarginV = dominant;

@@ -274,6 +274,14 @@ int ScopeApp::run() {
         axesDiff_->addPlot(std::make_shared<vp::LinePlot>(markS)));
     trigLineDiff_ = static_cast<vp::LinePlot*>(
         axesDiff_->addPlot(std::make_shared<vp::LinePlot>(trigDiffS)));
+    frameEdgesOk_ = static_cast<vp::Vlines*>(axesDiff_->addPlot(
+        std::make_shared<vp::Vlines>(std::vector<float>{}, 0.0f, 0.0f,
+                                     vp::Color::fromRgba8(60, 170, 90, 200),
+                                     1.0f)));
+    frameEdgesBad_ = static_cast<vp::Vlines*>(axesDiff_->addPlot(
+        std::make_shared<vp::Vlines>(std::vector<float>{}, 0.0f, 0.0f,
+                                     vp::Color::fromRgba8(230, 80, 70, 200),
+                                     1.0f)));
 
     // ---- Widgets ------------------------------------------------------
     messageList_ = figure_->addWidget<MessageListWidget>();
@@ -939,8 +947,9 @@ void ScopeApp::updateScopePlots() {
                                     markYs(axesTop_, n));
     }
 
-    // Packet overlay: one label per visible decoded frame on the diff
-    // axes — green check for clean frames, red cross for errors.
+    // Packet overlay: frame-edge lines plus a label centred over each
+    // decoded frame on the diff axes — only once frames span enough
+    // pixels (zoom gate), so zoomed-out views stay clean.
     if (axesDiff_) {
         auto& texts = axesDiff_->texts();
         texts.clear();
@@ -950,33 +959,73 @@ void ScopeApp::updateScopePlots() {
         const auto yr = axesDiff_->ylim();
         const float yTop = yr.max - yr.span() * 0.10f;
         const float yRow = yr.span() * 0.09f;
-        const vp::Color okCol = vp::Color::fromRgba8(120, 220, 140);
-        const vp::Color badCol = vp::Color::fromRgba8(240, 110, 100);
-        size_t shown = 0;
-        for (const auto& fe : frameMarks_) {
-            if (fe.position < vFirst || fe.position > vLast) continue;
-            if (shown++ >= 32) break;
+        const double msPerPx = (vx1 - vx0) /
+                               std::max(1.0, double(axesDiff_->rect.width));
+        const vp::Color okCol = vp::Color::fromRgba8(35, 150, 80);
+        const vp::Color badCol = vp::Color::fromRgba8(200, 55, 45);
+        std::vector<float> edgesOk, edgesBad;
+        // Newest frames first (live edge), two staggered rows; a label
+        // is skipped when it would overlap an already-placed one.
+        double leftEdge[2] = {std::numeric_limits<double>::max(),
+                              std::numeric_limits<double>::max()};
+        for (auto it = frameMarks_.rbegin();
+             it != frameMarks_.rend(); ++it) {
+            const auto& fe = *it;
+            // Only frames fully inside the view get an overlay.
+            if (fe.position < vFirst || fe.end > vLast) continue;
             const bool ok = fe.frame.ack && fe.frame.ackDelimiterOk &&
                             fe.frame.eofOk &&
                             !fe.frame.dominantErrorAfterAck;
-            const float xm = static_cast<float>(
-                (fe.position - coordBase) * msPerSample);
+            const double x0 =
+                (fe.position - coordBase) * msPerSample;
+            const double x1 = (fe.end - coordBase) * msPerSample;
+            const double framePx = (x1 - x0) / msPerPx;
+            if (framePx < 8.0) continue;
+            auto& dst = ok ? edgesOk : edgesBad;
+            dst.push_back(static_cast<float>(x0));
+            dst.push_back(static_cast<float>(x1));
+            std::string code;
+            if (!fe.frame.ack) code += "+NAK";
+            if (!fe.frame.ackDelimiterOk) code += "+ADEL";
+            if (!fe.frame.eofOk) code += "+EOF";
+            if (fe.frame.dominantErrorAfterAck) code += "+DOM";
+            if (!code.empty()) code.erase(0, 1);
+            const std::string txt = std::format(
+                "{} {}", formatPacketLabel(fe, config_.packetFormat),
+                ok ? "✓" : std::format("{} ✗", code));
+            const double xm = (x0 + x1) * 0.5;
+            // ~6.5 px per 9pt char + padding, in data units.
+            const double wData =
+                (static_cast<double>(txt.size()) * 6.5 + 12.0) * msPerPx;
+            // The label only appears once the box fits inside the frame.
+            if (wData > x1 - x0) continue;
+            const double right = xm + wData * 0.5;
+            const double left = xm - wData * 0.5;
+            const int row =
+                right < leftEdge[0] ? 0 : right < leftEdge[1] ? 1 : -1;
+            if (row < 0) continue;
+            leftEdge[row] = left;
             auto* a = axesDiff_->text(
-                xm, yTop - static_cast<float>(shown & 1) * yRow,
-                std::format("{} {}", ok ? "✓" : "✗",
-                            formatPacketLabel(fe, config_.packetFormat)),
+                static_cast<float>(xm),
+                yTop - static_cast<float>(row) * yRow, txt,
                 vp::CoordSystem::Data);
             a->fontSize = 9.0f;
             a->color = ok ? okCol : badCol;
             a->halign = vp::HAlign::Center;
             a->valign = vp::VAlign::Top;
             a->hasBbox = true;
-            a->bboxFaceColor = vp::Color::fromRgba8(20, 22, 28, 200);
+            a->bboxFaceColor = ok
+                ? vp::Color::fromRgba8(238, 250, 240, 235)
+                : vp::Color::fromRgba8(252, 240, 238, 235);
             a->bboxEdgeColor = a->color;
-            a->bboxEdgeWidth = 0.8f;
-            a->bboxPadding = 2.0f;
-            a->bboxCornerRadius = 2.0f;
+            a->bboxEdgeWidth = 1.0f;
+            a->bboxPadding = 3.0f;
+            a->boxStyle = vp::parseBoxStyle("round,pad=0.3");
         }
+        if (frameEdgesOk_)
+            frameEdgesOk_->setData(std::move(edgesOk), yr.min, yr.max);
+        if (frameEdgesBad_)
+            frameEdgesBad_->setData(std::move(edgesBad), yr.min, yr.max);
     }
 }
 
