@@ -27,6 +27,9 @@
 
 namespace ucan {
 
+/// On-scope packet overlay format.
+enum class PacketFormat { Raw, Klipper };
+
 struct AppConfig {
     std::string firmwarePath;
     int rateMHz = 10;
@@ -46,6 +49,7 @@ struct AppConfig {
     std::string logCanPath;              // JSONL frames+triggers
     std::string logRawPath;              // raw ADC .bin for `view`
     std::string viewFile;                // non-empty → replay, not capture
+    PacketFormat packetFormat = PacketFormat::Raw;
 };
 
 /// Live CAN scope: Hantek isochronous stream -> LiveDecoder +
@@ -100,6 +104,7 @@ private:
     };
     SpscQueue<UiEvent, 2048> uiQueue_;
     std::deque<can::TriggerEvent> triggerMarks_;
+    std::deque<can::FrameEvent> frameMarks_; // for the packet overlay
     MessageListWidget* messageList_ = nullptr;
 
     // Shared UI-adjustable settings (written on UI thread, synced on

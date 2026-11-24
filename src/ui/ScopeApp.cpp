@@ -41,6 +41,44 @@ std::string formatUs(double us) {
     if (us >= 1e3) return std::format("{:.4g} ms", us / 1e3);
     return std::format("{:.4g} µs", us);
 }
+
+/// Short overlay label for a decoded frame — raw "123#01 02 …" or the
+/// Klipper CAN protocol interpretation (docs/CANBUS_protocol.md).
+std::string formatPacketLabel(const can::FrameEvent& fe,
+                              PacketFormat fmt) {
+    const auto& f = fe.frame;
+    const auto hex = [&f](int i0, int i1) {
+        std::string s;
+        for (int i = i0; i < i1 && i < f.dlc; ++i) {
+            if (i != i0) s += ' ';
+            s += std::format("{:02X}", static_cast<unsigned>(f.data[i]));
+        }
+        return s;
+    };
+    if (fmt == PacketFormat::Klipper) {
+        if (f.identifier == 0x3f0) { // host → mcu admin (broadcast)
+            if (f.dlc >= 1 && f.data[0] == 0x00)
+                return "adm> QUERY_UNASSIGNED";
+            if (f.dlc >= 8 && f.data[0] == 0x01)
+                return std::format("adm> SET_NODEID n{} {}", f.data[7],
+                                   hex(1, 7));
+            return "adm> " + hex(0, f.dlc);
+        }
+        if (f.identifier == 0x3f1) { // mcu → host admin
+            if (f.dlc >= 8 && f.data[0] == 0x20)
+                return "adm< NEED_NODEID " + hex(1, 7);
+            return "adm< " + hex(0, f.dlc);
+        }
+        if (f.identifier >= 256) { // node data channel
+            const int node = static_cast<int>(f.identifier - 256) / 2;
+            const bool resp = (f.identifier - 256) & 1;
+            return std::format("n{} {} {}", node, resp ? "resp" : "cmd",
+                               hex(0, f.dlc));
+        }
+        return std::format("0x{:03X} {}", f.identifier, hex(0, f.dlc));
+    }
+    return std::format("{:03X}#{}", f.identifier, hex(0, f.dlc));
+}
 } // namespace
 
 ScopeApp::ScopeApp(AppConfig config) : config_(std::move(config)) {
@@ -530,6 +568,8 @@ void ScopeApp::uiFrame() {
     while (uiQueue_.pop(event)) {
         if (event.kind == UiEvent::Kind::Frame) {
             if (messageList_) messageList_->addFrame(event.frame);
+            frameMarks_.push_back(event.frame);
+            if (frameMarks_.size() > 512) frameMarks_.pop_front();
             ++framesSeen_;
         } else {
             // Trigger events feed the scope markers and the JSONL log
@@ -897,6 +937,46 @@ void ScopeApp::updateScopePlots() {
         if (markerTopLine_)
             markerTopLine_->setData(std::move(mx),
                                     markYs(axesTop_, n));
+    }
+
+    // Packet overlay: one label per visible decoded frame on the diff
+    // axes — green check for clean frames, red cross for errors.
+    if (axesDiff_) {
+        auto& texts = axesDiff_->texts();
+        texts.clear();
+        while (!frameMarks_.empty() &&
+               frameMarks_.front().position < dataOrigin)
+            frameMarks_.pop_front();
+        const auto yr = axesDiff_->ylim();
+        const float yTop = yr.max - yr.span() * 0.10f;
+        const float yRow = yr.span() * 0.09f;
+        const vp::Color okCol = vp::Color::fromRgba8(120, 220, 140);
+        const vp::Color badCol = vp::Color::fromRgba8(240, 110, 100);
+        size_t shown = 0;
+        for (const auto& fe : frameMarks_) {
+            if (fe.position < vFirst || fe.position > vLast) continue;
+            if (shown++ >= 32) break;
+            const bool ok = fe.frame.ack && fe.frame.ackDelimiterOk &&
+                            fe.frame.eofOk &&
+                            !fe.frame.dominantErrorAfterAck;
+            const float xm = static_cast<float>(
+                (fe.position - coordBase) * msPerSample);
+            auto* a = axesDiff_->text(
+                xm, yTop - static_cast<float>(shown & 1) * yRow,
+                std::format("{} {}", ok ? "✓" : "✗",
+                            formatPacketLabel(fe, config_.packetFormat)),
+                vp::CoordSystem::Data);
+            a->fontSize = 9.0f;
+            a->color = ok ? okCol : badCol;
+            a->halign = vp::HAlign::Center;
+            a->valign = vp::VAlign::Top;
+            a->hasBbox = true;
+            a->bboxFaceColor = vp::Color::fromRgba8(20, 22, 28, 200);
+            a->bboxEdgeColor = a->color;
+            a->bboxEdgeWidth = 0.8f;
+            a->bboxPadding = 2.0f;
+            a->bboxCornerRadius = 2.0f;
+        }
     }
 }
 

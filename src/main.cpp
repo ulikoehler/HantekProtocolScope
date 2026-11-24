@@ -68,6 +68,9 @@ void addCommonArgs(ArgumentParser& p) {
     p.add_argument("--log-raw")
         .help("rohe ADC-Paare mit Header loggen (für 'view')")
         .default_value(std::string(""));
+    p.add_argument("--packets")
+        .help("Scope-Overlay-Format: raw oder klipper")
+        .default_value(std::string("raw"));
 }
 
 void fillCommon(const ArgumentParser& p, ucan::AppConfig& c) {
@@ -89,6 +92,14 @@ void fillCommon(const ArgumentParser& p, ucan::AppConfig& c) {
     c.noGui = p.get<bool>("--no-gui");
     c.logCanPath = p.get<std::string>("--log-can");
     c.logRawPath = p.get<std::string>("--log-raw");
+    const std::string pkts = p.get<std::string>("--packets");
+    if (pkts == "raw") {
+        c.packetFormat = ucan::PacketFormat::Raw;
+    } else if (pkts == "klipper") {
+        c.packetFormat = ucan::PacketFormat::Klipper;
+    } else {
+        throw std::runtime_error("--packets: raw oder klipper erwartet");
+    }
 }
 
 } // namespace
