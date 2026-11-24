@@ -382,7 +382,6 @@ int ScopeApp::run() {
             paused_.store(false, std::memory_order_relaxed);
             lastAcceptSeen_ = -1;
             snapshot_.valid = false;
-            wasFrozen_ = false;
             follow_.store(true, std::memory_order_relaxed);
             yAuto_.store(true, std::memory_order_relaxed);
             lastAutoValid_ = false;
@@ -741,10 +740,14 @@ void ScopeApp::updateScopePlots() {
         const bool paused = paused_.load(std::memory_order_relaxed);
         frozen = holdFrozen || paused;
         holdFrozenUi_ = holdFrozen;
-        if (frozen && !wasFrozen_) frozenCoordOrigin_ = origin;
         if (frozen && !snapshot_.valid) {
             // Copy the whole buffer at freeze time so zoom/pan
             // resolves real samples while acquisition runs on.
+            // The coordinate anchor must move with every retake —
+            // a new accept during a freeze refreshes the snapshot
+            // with a newer origin, and a stale anchor would map the
+            // view outside the copied range (empty screen).
+            frozenCoordOrigin_ = origin;
             const int64_t f0 = origin, f1 = head;
             std::lock_guard lock(displayMutex_);
             for (int c = 0; c < 3; ++c)
@@ -757,7 +760,6 @@ void ScopeApp::updateScopePlots() {
             snapshot_.valid = true;
         }
         if (!frozen) snapshot_.valid = false;
-        wasFrozen_ = frozen;
 
         const int64_t anchor =
             cand >= origin + halfW ? std::min(cand, maxAnchor)
