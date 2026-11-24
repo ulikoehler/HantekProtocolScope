@@ -163,10 +163,10 @@ private:
     // common value so manual nav on either axes can be mirrored.
     bool syncedXValid_ = false;
     double syncedX0_ = 0, syncedX1_ = 0;
-    // Holdoff freeze: on every newly accepted trigger the screen
-    // pauses for the holdoff duration (auto) resp. until the next
-    // accept (normal) — same effect as spacebar, title says HOLDOFF.
-    std::chrono::steady_clock::time_point holdoffUntil_{};
+    // Holdoff freeze is measured in stream samples: the display
+    // stays frozen while head < accepted + holdoffSamples (auto) or
+    // until the next accept (normal) — same effect as spacebar,
+    // title says HOLDOFF.
     int64_t lastAcceptSeen_ = -1;
     bool holdFrozenUi_ = false;   // frozen-by-holdoff state for title
     int titleMode_ = -1;          // 0=live 1=stopped 2=holdoff

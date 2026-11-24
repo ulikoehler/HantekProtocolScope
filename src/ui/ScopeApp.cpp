@@ -148,10 +148,12 @@ int ScopeApp::run() {
     // Window + buffer sizing need the real sample rate (device or file).
     windowSamples_ = static_cast<size_t>(config_.windowMs * 1e-3 * rateHz_);
     if (config_.displayCapacity == 0) {
+        // 2 s of stream history — deep enough for retrospective
+        // triggering (accepted triggers are detected after their
+        // window is already buffered) and for holdoff freezes.
         const size_t streamSamples = static_cast<size_t>(rateHz_);
-        config_.displayCapacity = std::min<size_t>(
-            streamSamples * 8 / 10,
-            std::max<size_t>(windowSamples_ * 12, streamSamples / 2));
+        config_.displayCapacity = std::max<size_t>(windowSamples_ * 12,
+                                                   streamSamples * 2);
     }
 
     for (auto& buf : chanBuffers_)
@@ -344,7 +346,6 @@ int ScopeApp::run() {
         if (messageList_) messageList_->clear();
         // Force re-arm: drop the freeze and its snapshot.
         lastAcceptSeen_ = -1;
-        holdoffUntil_ = {};
         snapshot_.valid = false;
     };
     for (size_t i = 0; i < kBitrates.size(); ++i)
@@ -380,7 +381,6 @@ int ScopeApp::run() {
             // follow + Y-auto, force re-center/refit next frame.
             paused_.store(false, std::memory_order_relaxed);
             lastAcceptSeen_ = -1;
-            holdoffUntil_ = {};
             snapshot_.valid = false;
             wasFrozen_ = false;
             follow_.store(true, std::memory_order_relaxed);
@@ -723,22 +723,20 @@ void ScopeApp::updateScopePlots() {
 
         // ---- freeze management ----
         // Every newly accepted trigger pauses the screen for the
-        // holdoff duration — like spacebar, but titled HOLDOFF.
-        // Auto releases at holdoffUntil_, normal holds until the
-        // next accept arrives.
-        const auto now = std::chrono::steady_clock::now();
+        // holdoff window — measured in stream samples, so the freeze
+        // lasts exactly as long as it takes the stream to move past
+        // the post-trigger holdoff window (a new accept can only
+        // happen after it). Auto releases once the window has passed,
+        // normal holds until the next accept arrives.
+        const int64_t holdoffSamples = static_cast<int64_t>(
+            holdoffUs_.load(std::memory_order_relaxed) * rateHz_ / 1e6);
         if (cand != lastAcceptSeen_) {
             lastAcceptSeen_ = cand;
-            if (cand >= 0) {
-                holdoffUntil_ =
-                    now + std::chrono::microseconds(static_cast<int64_t>(
-                              holdoffUs_.load(std::memory_order_relaxed)));
-                snapshot_.valid = false; // fresh freeze snapshot
-            }
+            if (cand >= 0) snapshot_.valid = false; // fresh freeze
         }
         const bool holdFrozen =
             cand >= 0 && (trigAuto_.load(std::memory_order_relaxed)
-                              ? now < holdoffUntil_
+                              ? head < cand + holdoffSamples
                               : true);
         const bool paused = paused_.load(std::memory_order_relaxed);
         frozen = holdFrozen || paused;
