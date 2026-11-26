@@ -58,11 +58,14 @@ void HantekDevice::close() {
     }
 }
 
-bool HantekDevice::connect(uint16_t vendor) {
+bool HantekDevice::connect(uint16_t vendor, std::string* error) {
     libusb_device_handle* handle =
         libusb_open_device_with_vid_pid(context_, vendor, kProduct);
     if (!handle) return false;
-    if (libusb_claim_interface(handle, 0) != LIBUSB_SUCCESS) {
+    const int status = libusb_claim_interface(handle, 0);
+    if (status != LIBUSB_SUCCESS) {
+        if (error)
+            *error = libusb_strerror(static_cast<libusb_error>(status));
         libusb_close(handle);
         return false;
     }
@@ -91,12 +94,16 @@ void HantekDevice::open() {
 
         const auto deadline = std::chrono::steady_clock::now() +
                               std::chrono::seconds(15);
+        std::string runningConnectError;
         while (std::chrono::steady_clock::now() < deadline) {
-            if (connect(kRunningVid)) return;
+            if (connect(kRunningVid, &runningConnectError)) return;
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
         }
-        throw std::runtime_error(
-            "Hantek nach RAM-Start unter 04b5:602a nicht erreichbar.");
+        std::string message =
+            "Hantek nach RAM-Start unter 04b5:602a nicht erreichbar.";
+        if (!runningConnectError.empty())
+            message += " USB-Interface: " + runningConnectError;
+        throw std::runtime_error(message);
     } catch (...) {
         close();
         throw;

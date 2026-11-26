@@ -27,14 +27,16 @@ parseIntelHex(const std::string& text) {
         if (line.empty()) continue;
         if (line.front() != ':')
             throw std::runtime_error("Ungültiges Intel-HEX-Format");
-        if (line.size() % 2 != 0 || line.size() < 11)
+        // A record starts with ':' followed by an even number of hex digits,
+        // so its total character count is odd (e.g. EOF is ":00000001FF").
+        if (line.size() % 2 != 1 || line.size() < 11)
             throw std::runtime_error("Ungültige Intel-HEX-Länge");
         auto byteAt = [&](size_t i) {
             return uint8_t((hexNibble(line[1 + 2 * i]) << 4) |
                            hexNibble(line[2 + 2 * i]));
         };
         const uint8_t count = byteAt(0);
-        if (count == 0 || count > 255 || line.size() != 2 * (count + 5) + 1)
+        if (line.size() != 2 * (count + 5) + 1)
             throw std::runtime_error("Ungültige Intel-HEX-Prüfsumme oder Länge");
         uint32_t sum = 0;
         for (size_t i = 0; i <= count + 4; ++i) sum += byteAt(i);

@@ -1,0 +1,3 @@
+# Hantek DSO-6022BL: loader firmware upload and the re-enumerated scope.
+SUBSYSTEM=="usb", ATTR{idVendor}=="04b4", ATTR{idProduct}=="602a", MODE="0660", GROUP="plugdev", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTR{idVendor}=="04b5", ATTR{idProduct}=="602a", MODE="0660", GROUP="plugdev", TAG+="uaccess"

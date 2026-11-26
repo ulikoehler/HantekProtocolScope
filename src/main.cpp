@@ -119,9 +119,11 @@ int main(int argc, char** argv) {
     std::vector<std::string> args(argv, argv + argc);
     const bool topLevelHelp =
         args.size() > 1 && (args[1] == "-h" || args[1] == "--help");
-    if (args.size() > 1 && args[1] != "live" && args[1] != "view" &&
-        !topLevelHelp)
+    if (args.size() == 1) {
+        args.push_back("live");
+    } else if (args[1] != "live" && args[1] != "view" && !topLevelHelp) {
         args.insert(args.begin() + 1, "live");
+    }
 
     ArgumentParser prog("ulican",
                         "Live-CAN-Oszilloskop auf dem Hantek DSO-6022BL");
@@ -197,8 +199,9 @@ int main(int argc, char** argv) {
             }
             if (config.firmwarePath.empty()) {
                 throw std::runtime_error(
-                    "Keine Firmware-Datei: --firmware angeben oder "
-                    "deps/dso6022bl-firmware.hex bereitstellen");
+                    "Keine Firmware-Datei: Projekt bauen, damit "
+                    "firmware/dso6022bl-firmware.hex erzeugt wird, oder "
+                    "--firmware angeben");
             }
         }
 

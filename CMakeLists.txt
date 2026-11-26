@@ -34,6 +34,29 @@ add_subdirectory(VolcanoPlot)
 # ----------------------------------------------------------------------------
 # ulican executable
 # ----------------------------------------------------------------------------
+set(UCAN_FIRMWARE_SOURCE
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/Hantek6022API/Firmware/DSO6022BL/dso6022bl-firmware.hex")
+set(UCAN_FIRMWARE_PATH
+    "${CMAKE_CURRENT_SOURCE_DIR}/firmware/dso6022bl-firmware.hex")
+
+if(NOT EXISTS "${UCAN_FIRMWARE_SOURCE}")
+    message(FATAL_ERROR
+        "Hantek6022API submodule fehlt — 'git submodule update --init "
+        "--recursive' im Repo-Root ausführen")
+endif()
+
+add_custom_command(
+    OUTPUT "${UCAN_FIRMWARE_PATH}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory
+            "${CMAKE_CURRENT_SOURCE_DIR}/firmware"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${UCAN_FIRMWARE_SOURCE}" "${UCAN_FIRMWARE_PATH}"
+    DEPENDS "${UCAN_FIRMWARE_SOURCE}"
+    COMMENT "Copying DSO-6022BL firmware from Hantek6022API"
+    VERBATIM
+)
+add_custom_target(ulican_firmware DEPENDS "${UCAN_FIRMWARE_PATH}")
+
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBUSB REQUIRED IMPORTED_TARGET libusb-1.0)
 find_package(Threads REQUIRED)
@@ -52,6 +75,7 @@ add_executable(ulican
     src/ui/MessageListWidget.cpp
     src/ui/ScopeApp.cpp
 )
+add_dependencies(ulican ulican_firmware)
 
 target_include_directories(ulican PRIVATE
     src
@@ -75,5 +99,5 @@ target_link_libraries(ulican PRIVATE
 )
 
 target_compile_definitions(ulican PRIVATE
-    UCAN_FIRMWARE_DEFAULT="${CMAKE_CURRENT_SOURCE_DIR}/../deps/dso6022bl-firmware.hex"
+    UCAN_FIRMWARE_DEFAULT="${UCAN_FIRMWARE_PATH}"
 )

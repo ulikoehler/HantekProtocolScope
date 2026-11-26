@@ -60,7 +60,7 @@ public:
     [[nodiscard]] double voltage(uint8_t adc, int channel) const noexcept;
 
 private:
-    bool connect(uint16_t vendor);
+    bool connect(uint16_t vendor, std::string* error = nullptr);
     void check(int status, const char* what) const;
 
     libusb_context* context_ = nullptr;
