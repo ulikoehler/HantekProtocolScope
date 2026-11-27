@@ -42,6 +42,11 @@ void addCommonArgs(ArgumentParser& p) {
     p.add_argument("--trigger")
         .help("sof | error | dominant (Standard: sof)")
         .default_value(std::string("sof"));
+    p.add_argument("--trigger-position")
+        .help("Triggerposition als Anteil der Fensterbreite: 0..1 "
+              "(Standard: 0.1)")
+        .scan<'g', double>()
+        .default_value(0.1);
     p.add_argument("--window-ms")
         .help("angezeigte Zeitbasis in ms (Standard: 20)")
         .scan<'g', double>()
@@ -93,6 +98,10 @@ void fillCommon(const ArgumentParser& p, ucan::AppConfig& c) {
             "--trigger: sof, error oder dominant erwartet");
     }
     c.windowMs = p.get<double>("--window-ms");
+    c.triggerPosition = p.get<double>("--trigger-position");
+    if (c.triggerPosition < 0.0 || c.triggerPosition > 1.0)
+        throw std::runtime_error(
+            "--trigger-position: Wert zwischen 0 und 1 erwartet");
     c.width = static_cast<uint32_t>(p.get<int>("--width"));
     c.height = static_cast<uint32_t>(p.get<int>("--height"));
     c.stats = p.get<bool>("--stats");

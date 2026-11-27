@@ -29,6 +29,8 @@ void installSignalHandlers() {
 namespace {
 constexpr int kListHeight = 170;
 constexpr int kControlHeight = 66;
+constexpr size_t kMaxEyeSweeps = 256;
+constexpr size_t kMaxPendingEyeTriggers = 256;
 constexpr std::array<uint32_t, 4> kBitrates = {125'000, 250'000, 500'000,
                                                1'000'000};
 constexpr std::array<const char*, 4> kBitrateLabels = {
@@ -181,6 +183,7 @@ int ScopeApp::run() {
     desc.width = config_.width;
     desc.height = config_.height;
     desc.windowTitle = "UliCAN — Live CAN scope";
+    desc.maximized = true;
     backend_ = volcano::backend::createScreenBackend(desc);
     renderer_ = std::make_unique<volcano::render::Renderer>(*backend_);
     // Two stacked scopes sharing the X (time) viewport: CANH + CANL on
@@ -188,7 +191,13 @@ int ScopeApp::run() {
     // updateScopePlots mirrors manual navigation between them.
     figure_ = std::make_unique<vp::Figure>(2, 1);
     axesTop_ = figure_->addAxes(0, 0);
-    axesTop_->setStyle(vp::styles::ggplotStyle());
+    auto scopeStyle = vp::styles::ggplotStyle();
+    scopeStyle.axesFaceColor = vp::Color::white();
+    scopeStyle.xAxis.grid = false; // horizontal guides only
+    scopeStyle.yAxis.grid = true;
+    scopeStyle.yAxis.gridColor = vp::Color::fromRgba8(220, 220, 220);
+    scopeStyle.yAxis.gridLineWidth = 0.8f;
+    axesTop_->setStyle(scopeStyle);
     axesTop_->setTitle("CANH / CANL (live)");
     axesTop_->style().xAxis.label = "";
     axesTop_->style().yAxis.label = "V";
@@ -196,7 +205,7 @@ int ScopeApp::run() {
     axesTop_->setYlim(-0.5f, 5.0f);
 
     axesDiff_ = figure_->addAxes(1, 0);
-    axesDiff_->setStyle(vp::styles::ggplotStyle());
+    axesDiff_->setStyle(scopeStyle);
     axesDiff_->setTitle("CANH − CANL");
     axesDiff_->style().xAxis.label = "t [ms]";
     axesDiff_->style().yAxis.label = "diff [V]";
@@ -233,7 +242,7 @@ int ScopeApp::run() {
     markS.size = 8.0f;
     markS.lineStyle = vp::LineStyle::None;
     markTopS = markS;
-    // Vertical line at the centered trigger position.
+    // Vertical line at the configurable trigger position.
     trigTopS.color = Color::fromRgba8(240, 150, 40);
     trigTopS.lineStyle = vp::LineStyle::Dotted;
     trigTopS.lineWidth = 1.0f;
@@ -265,6 +274,28 @@ int ScopeApp::run() {
         axesDiff_->addPlot(std::make_shared<vp::LinePlot>(minS)));
     maxLine_ = static_cast<vp::LinePlot*>(
         axesDiff_->addPlot(std::make_shared<vp::LinePlot>(maxS)));
+
+    // Persistence layers are six translucent polylines (min/max for CANH,
+    // CANL and differential). Individual trigger-aligned sweeps are separated
+    // by NaNs inside each line, so overlapping paths naturally become brighter.
+    const auto addEyeLine = [](vp::Axes* axes, vp::Color color) {
+        vp::Series2D s;
+        s.color = color;
+        s.alpha = 0.12f;
+        s.lineWidth = 0.8f;
+        s.usePropCycle = false;
+        s.points = {{0.0f, -50.0f}};
+        auto* line = static_cast<vp::LinePlot*>(
+            axes->addPlot(std::make_shared<vp::LinePlot>(std::move(s))));
+        line->zorder = 1.5f;
+        return line;
+    };
+    eyeMinLines_[0] = addEyeLine(axesTop_, canhMinS.color);
+    eyeMaxLines_[0] = addEyeLine(axesTop_, canhMaxS.color);
+    eyeMinLines_[1] = addEyeLine(axesTop_, canlMinS.color);
+    eyeMaxLines_[1] = addEyeLine(axesTop_, canlMaxS.color);
+    eyeMinLines_[2] = addEyeLine(axesDiff_, minS.color);
+    eyeMaxLines_[2] = addEyeLine(axesDiff_, maxS.color);
     thrLine_ = static_cast<vp::LinePlot*>(
         axesDiff_->addPlot(std::make_shared<vp::LinePlot>(thrS)));
     limLoLine_ = static_cast<vp::LinePlot*>(
@@ -290,44 +321,54 @@ int ScopeApp::run() {
         return vp::Rect2D{x, y, w, h};
     };
     thrSlider_ = figure_->addWidget<vp::Slider>(
-        rect(16, 0, 200, 30), "Trigger V", 0.05f, 5.0f,
+        rect(10, 0, 180, 30), "Trigger V", 0.05f, 5.0f,
         config_.thresholdV, 0);
     // Logarithmic stepped holdoff: slider 0..35 maps to
     // 10^(0.2*v) µs → 1 µs … 10 s in 36 detents (1-2-5 scheme).
     holdoffSlider_ = figure_->addWidget<vp::Slider>(
-        rect(224, 0, 200, 30), "", 0.0f, 35.0f,
+        rect(196, 0, 180, 30), "", 0.0f, 35.0f,
         static_cast<float>(std::log10(
             std::clamp(config_.holdoffUs, 1.0, 1e7)) /
             0.2),
         35);
-    bitrateButton_ = figure_->addWidget<vp::Button>(rect(432, 0, 140, 30), "");
+    bitrateButton_ = figure_->addWidget<vp::Button>(rect(382, 0, 120, 30), "");
     modeButton_ =
-        figure_->addWidget<vp::Button>(rect(580, 0, 160, 30), "");
+        figure_->addWidget<vp::Button>(rect(508, 0, 140, 30), "");
     autoButton_ =
-        figure_->addWidget<vp::Button>(rect(748, 0, 120, 30), "");
+        figure_->addWidget<vp::Button>(rect(654, 0, 100, 30), "");
     followButton_ =
-        figure_->addWidget<vp::Button>(rect(876, 0, 110, 30), "");
+        figure_->addWidget<vp::Button>(rect(760, 0, 100, 30), "");
     yautoButton_ =
-        figure_->addWidget<vp::Button>(rect(994, 0, 100, 30), "Y-Auto");
+        figure_->addWidget<vp::Button>(rect(866, 0, 90, 30), "Y-Auto");
     clearButton_ =
-        figure_->addWidget<vp::Button>(rect(1102, 0, 90, 30), "Clear");
+        figure_->addWidget<vp::Button>(rect(962, 0, 70, 30), "Clear");
+    eyeButton_ =
+        figure_->addWidget<vp::Button>(rect(1038, 0, 75, 30), "Eye: off");
+    graphButton_ = figure_->addWidget<vp::Button>(
+        rect(1119, 0, 130, 30), "Graphs: both");
 
-    thrSlider_->onChanged = [this](float v) { threshold_.store(v); };
+    thrSlider_->onChanged = [this](float v) {
+        threshold_.store(v);
+        clearEyePersistence();
+    };
     holdoffSlider_->onChanged = [this](float v) {
         const double us = std::pow(10.0, static_cast<double>(v) * 0.2);
         holdoffUs_.store(us);
         holdoffSlider_->label = "Holdoff " + formatUs(us);
+        clearEyePersistence();
     };
     bitrateButton_->onClick = [this] {
         bitrateIndex_ = (bitrateIndex_ + 1) % 4;
         bitrate_.store(kBitrates[bitrateIndex_]);
         bitrateButton_->label = kBitrateLabels[bitrateIndex_];
+        clearEyePersistence();
     };
     modeButton_->onClick = [this] {
         triggerMode_.store((triggerMode_.load() + 1) % 3);
         static const char* names[3] = {"Trigger: sof", "Trigger: error",
                                        "Trigger: dominant"};
         modeButton_->label = names[triggerMode_.load() % 3];
+        clearEyePersistence();
     };
     autoButton_->onClick = [this] {
         trigAuto_.store(!trigAuto_.load());
@@ -344,9 +385,16 @@ int ScopeApp::run() {
     };
     clearButton_->onClick = [this] {
         if (messageList_) messageList_->clear();
+        clearEyePersistence();
         // Force re-arm: drop the freeze and its snapshot.
         lastAcceptSeen_ = -1;
         snapshot_.valid = false;
+    };
+    eyeButton_->onClick = [this] { setEyeMode(!eyeMode_); };
+    graphButton_->onClick = [this] {
+        graphMode_ = static_cast<GraphMode>(
+            (static_cast<unsigned>(graphMode_) + 1) % 3);
+        applyGraphMode();
     };
     for (size_t i = 0; i < kBitrates.size(); ++i)
         if (kBitrates[i] == config_.bitrate) bitrateIndex_ = int(i);
@@ -359,6 +407,7 @@ int ScopeApp::run() {
     followButton_->label = "Follow: on";
     yautoButton_->label = "Y-Auto: on";
     holdoffSlider_->label = "Holdoff " + formatUs(config_.holdoffUs);
+    applyGraphMode();
 
     // ---- Navigation ----------------------------------------------------
     auto& nav = figure_->nav();
@@ -385,10 +434,16 @@ int ScopeApp::run() {
             follow_.store(true, std::memory_order_relaxed);
             yAuto_.store(true, std::memory_order_relaxed);
             lastAutoValid_ = false;
+            followSpanMs_ = 0.0;
+            clearEyePersistence();
             syncedXValid_ = false;
             lastAutoYTopValid_ = false;
             lastAutoYDiffValid_ = false;
             titleMode_ = -1;
+            return;
+        }
+        if (e.key == "e" || e.key == "E") {
+            setEyeMode(!eyeMode_);
             return;
         }
         if (e.key != " " && e.key != "space") return;
@@ -575,6 +630,160 @@ void ScopeApp::processSegment(const uint8_t* bytes, size_t sampleCount,
 // UI thread: drain events, decimate the display window, drive VolcanoPlot.
 // ---------------------------------------------------------------------
 
+void ScopeApp::setEyeMode(bool enabled) {
+    if (eyeMode_ == enabled) return;
+    eyeMode_ = enabled;
+    clearEyePersistence();
+    if (enabled) {
+        // Persistence only has a useful common time reference while the
+        // viewport follows the trigger.
+        follow_.store(true, std::memory_order_relaxed);
+        lastAutoValid_ = false;
+        syncedXValid_ = false;
+    }
+    if (eyeButton_)
+        eyeButton_->label = enabled ? "Eye: on" : "Eye: off";
+}
+
+void ScopeApp::clearEyePersistence() {
+    pendingEyeTriggers_.clear();
+    eyeSweeps_.clear();
+    lastEyeTrigger_ = -1;
+    eyeSpanMs_ = 0.0;
+    eyePlotsDirty_ = false;
+    const std::vector<float> x{0.0f}, y{-50.0f};
+    for (int ch = 0; ch < 3; ++ch) {
+        if (eyeMinLines_[ch]) eyeMinLines_[ch]->setData(x, y);
+        if (eyeMaxLines_[ch]) eyeMaxLines_[ch]->setData(x, y);
+    }
+}
+
+void ScopeApp::applyGraphMode() {
+    if (!axesTop_ || !axesDiff_ || !figure_) return;
+    const bool showSignals = graphMode_ != GraphMode::Diff;
+    const bool showDiff = graphMode_ != GraphMode::Signals;
+    axesTop_->setVisible(showSignals);
+    axesDiff_->setVisible(showDiff);
+    if (graphMode_ == GraphMode::Both) {
+        figure_->grid().heightRatios = {1.0f, 1.0f};
+        figure_->grid().hspace = 0.20f;
+    } else if (graphMode_ == GraphMode::Signals) {
+        figure_->grid().heightRatios = {1.0f, 0.0f};
+        figure_->grid().hspace = 0.0f;
+    } else {
+        figure_->grid().heightRatios = {0.0f, 1.0f};
+        figure_->grid().hspace = 0.0f;
+    }
+    figure_->markStale();
+}
+
+void ScopeApp::captureEyeSweeps(int64_t origin, int64_t head,
+                                double spanMs) {
+    if (!eyeMode_ || pendingEyeTriggers_.empty() || spanMs <= 0.0)
+        return;
+
+    const double msPerSample = 1e3 / rateHz_;
+    const int64_t spanSamples = std::max<int64_t>(
+        2, static_cast<int64_t>(std::ceil(spanMs / msPerSample)));
+    const int64_t preSamples = static_cast<int64_t>(
+        std::ceil(spanSamples * config_.triggerPosition));
+    const int64_t postSamples = spanSamples - preSamples;
+    const auto extent = backend_->extent();
+    const size_t maxCols = std::max<size_t>(
+        1, std::min<size_t>(static_cast<size_t>(extent.width) / 2, 1200));
+
+    // Limit work per UI frame. Pending triggers remain ordered and are
+    // captured once their post-trigger samples have arrived.
+    for (int captured = 0;
+         captured < 8 && !pendingEyeTriggers_.empty();) {
+        const int64_t trigger = pendingEyeTriggers_.front();
+        const int64_t first = trigger - preSamples;
+        if (first < origin) {
+            pendingEyeTriggers_.pop_front();
+            continue;
+        }
+        if (trigger + postSamples > head) break;
+
+        std::array<std::vector<float>, 3> raw;
+        {
+            std::lock_guard lock(displayMutex_);
+            for (int ch = 0; ch < 3; ++ch)
+                chanBuffers_[ch]->extractRange(
+                    first, static_cast<size_t>(spanSamples), raw[ch]);
+        }
+        pendingEyeTriggers_.pop_front();
+        const size_t count = std::min({raw[0].size(), raw[1].size(),
+                                       raw[2].size()});
+        if (count < 2) continue;
+
+        EyeSweep sweep;
+        const size_t cols = std::min(maxCols, count);
+        sweep.xOffsetMs.resize(cols);
+        for (int ch = 0; ch < 3; ++ch) {
+            sweep.ymin[ch].resize(cols);
+            sweep.ymax[ch].resize(cols);
+        }
+        for (size_t c = 0; c < cols; ++c) {
+            const size_t i0 = c * count / cols;
+            const size_t i1 = std::max(i0 + 1, (c + 1) * count / cols);
+            const double mid = (static_cast<double>(i0 + i1) * 0.5) -
+                               static_cast<double>(preSamples);
+            sweep.xOffsetMs[c] = static_cast<float>(mid * msPerSample);
+            for (int ch = 0; ch < 3; ++ch) {
+                float lo = std::numeric_limits<float>::max();
+                float hi = std::numeric_limits<float>::lowest();
+                for (size_t i = i0; i < i1 && i < count; ++i) {
+                    lo = std::min(lo, raw[ch][i]);
+                    hi = std::max(hi, raw[ch][i]);
+                }
+                sweep.ymin[ch][c] = lo;
+                sweep.ymax[ch][c] = hi;
+            }
+        }
+        if (eyeSweeps_.size() == kMaxEyeSweeps) eyeSweeps_.pop_front();
+        eyeSweeps_.push_back(std::move(sweep));
+        eyePlotsDirty_ = true;
+        ++captured;
+    }
+}
+
+void ScopeApp::updateEyePlots(double triggerX) {
+    if (!eyeMode_) return;
+    if (!eyePlotsDirty_ && std::fabs(triggerX - eyePlotTriggerX_) < 1e-6)
+        return;
+    eyePlotTriggerX_ = triggerX;
+
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    for (int ch = 0; ch < 3; ++ch) {
+        size_t points = 0;
+        for (const auto& sweep : eyeSweeps_)
+            points += sweep.xOffsetMs.size() + 1;
+        std::vector<float> x, lo, hi;
+        x.reserve(points);
+        lo.reserve(points);
+        hi.reserve(points);
+        for (const auto& sweep : eyeSweeps_) {
+            for (size_t i = 0; i < sweep.xOffsetMs.size(); ++i) {
+                x.push_back(static_cast<float>(triggerX) +
+                            sweep.xOffsetMs[i]);
+                lo.push_back(sweep.ymin[ch][i]);
+                hi.push_back(sweep.ymax[ch][i]);
+            }
+            x.push_back(nan);
+            lo.push_back(nan);
+            hi.push_back(nan);
+        }
+        if (x.empty()) {
+            x = {0.0f};
+            lo = {-50.0f};
+            hi = {-50.0f};
+        }
+        if (eyeMinLines_[ch]) eyeMinLines_[ch]->setData(x, lo);
+        if (eyeMaxLines_[ch]) eyeMaxLines_[ch]->setData(std::move(x), hi);
+    }
+    eyePlotsDirty_ = false;
+}
+
 void ScopeApp::uiFrame() {
     const bool paused = paused_.load(std::memory_order_relaxed);
     if (paused) {
@@ -703,8 +912,9 @@ void ScopeApp::updateScopePlots() {
     }
 
     // ---- X viewport --------------------------------------------------
-    // Trigger-centered view (scope semantics): the anchor is the newest
-    // holdoff-accepted trigger. Once the centered window is fully
+    // Trigger-follow view (scope semantics): the anchor is the newest
+    // holdoff-accepted trigger, shown at the configured horizontal position.
+    // Once the window is
     // populated the sweep is held (normal: until the next accept; auto:
     // plus timeout). While held or paused the display buffers are
     // snapshotted so zoom/pan resolves real samples — the frozen
@@ -714,9 +924,16 @@ void ScopeApp::updateScopePlots() {
     double anchorMs = -1.0;
     bool frozen = false;
     if (axesTop_ && axesDiff_ && head > origin) {
-        const int64_t halfW =
-            static_cast<int64_t>(windowSamples_ / 2);
-        const int64_t maxAnchor = head - halfW;
+        const double followSpan =
+            followSpanMs_ > msPerSample ? followSpanMs_ : windowMs;
+        const int64_t spanSamples = static_cast<int64_t>(
+            std::ceil(followSpan / msPerSample));
+        const int64_t preTriggerSamples = static_cast<int64_t>(
+            std::ceil(spanSamples * config_.triggerPosition));
+        const int64_t postTriggerSamples =
+            spanSamples - preTriggerSamples;
+        const int64_t minAnchor = origin + preTriggerSamples;
+        const int64_t maxAnchor = head - postTriggerSamples;
         const int64_t cand =
             latestAccepted_.load(std::memory_order_relaxed);
 
@@ -765,39 +982,64 @@ void ScopeApp::updateScopePlots() {
         if (!frozen) snapshot_.valid = false;
 
         const int64_t anchor =
-            cand >= origin + halfW ? std::min(cand, maxAnchor)
-                                   : maxAnchor;
+            cand >= minAnchor ? std::min(cand, maxAnchor) : maxAnchor;
         // The trigger line keeps its last position while frozen.
         anchorMs = frozen ? -1.0 : (anchor - origin) * msPerSample;
-        double x0 = anchorMs - windowMs * 0.5;
-        double x1 = anchorMs + windowMs * 0.5;
+        // A translated viewport is an intentional pan and disables follow.
+        // A changed span is wheel/rectangle zoom: retain the new timebase and
+        // keep subsequent accepted triggers at the set position in it.
+        if (follow_.load(std::memory_order_relaxed) && lastAutoValid_) {
+            const auto t = axesTop_->xlim();
+            const auto d = axesDiff_->xlim();
+            const auto moved = [this](const auto& r) {
+                return std::fabs(r.min - lastAutoX0_) > 0.02 ||
+                       std::fabs(r.max - lastAutoX1_) > 0.02;
+            };
+            const bool topMoved = moved(t);
+            const bool diffMoved = moved(d);
+            if (topMoved || diffMoved) {
+                const auto r = topMoved ? t : d;
+                const double oldSpan = lastAutoX1_ - lastAutoX0_;
+                const double newSpan = r.max - r.min;
+                const double spanTolerance =
+                    std::max(0.002, std::fabs(oldSpan) * 0.01);
+                if (newSpan > msPerSample &&
+                    std::fabs(newSpan - oldSpan) > spanTolerance) {
+                    followSpanMs_ = newSpan;
+                    clearEyePersistence();
+                    axesTop_->setXlim(r.min, r.max);
+                    axesDiff_->setXlim(r.min, r.max);
+                    lastAutoX0_ = r.min;
+                    lastAutoX1_ = r.max;
+                    syncedX0_ = r.min;
+                    syncedX1_ = r.max;
+                    syncedXValid_ = true;
+                } else {
+                    follow_.store(false, std::memory_order_relaxed);
+                    clearEyePersistence();
+                }
+            }
+        }
+
+        const double activeSpan =
+            followSpanMs_ > msPerSample ? followSpanMs_ : windowMs;
+        double x0 = anchorMs - activeSpan * config_.triggerPosition;
+        double x1 = x0 + activeSpan;
         if (x0 < 0.0) {
             x1 -= x0;
             x0 = 0.0;
         }
         if (!frozen && follow_.load(std::memory_order_relaxed)) {
-            const auto t = axesTop_->xlim();
-            const auto d = axesDiff_->xlim();
-            const bool manual =
-                lastAutoValid_ &&
-                (std::fabs(t.min - lastAutoX0_) > 0.02 ||
-                 std::fabs(t.max - lastAutoX1_) > 0.02 ||
-                 std::fabs(d.min - lastAutoX0_) > 0.02 ||
-                 std::fabs(d.max - lastAutoX1_) > 0.02);
-            if (manual) {
-                follow_.store(false, std::memory_order_relaxed);
-            } else {
-                axesTop_->setXlim(static_cast<float>(x0),
-                                  static_cast<float>(x1));
-                axesDiff_->setXlim(static_cast<float>(x0),
-                                   static_cast<float>(x1));
-                lastAutoX0_ = x0;
-                lastAutoX1_ = x1;
-                lastAutoValid_ = true;
-                syncedX0_ = x0;
-                syncedX1_ = x1;
-                syncedXValid_ = true;
-            }
+            axesTop_->setXlim(static_cast<float>(x0),
+                              static_cast<float>(x1));
+            axesDiff_->setXlim(static_cast<float>(x0),
+                               static_cast<float>(x1));
+            lastAutoX0_ = x0;
+            lastAutoX1_ = x1;
+            lastAutoValid_ = true;
+            syncedX0_ = x0;
+            syncedX1_ = x1;
+            syncedXValid_ = true;
         }
         if (frozen || !follow_.load(std::memory_order_relaxed)) {
             const auto t = axesTop_->xlim();
@@ -824,6 +1066,25 @@ void ScopeApp::updateScopePlots() {
         const auto cur = axesTop_->xlim();
         vx0 = cur.min;
         vx1 = cur.max;
+
+        if (eyeMode_) {
+            const double visibleSpan = std::max(msPerSample, vx1 - vx0);
+            if (eyeSpanMs_ <= 0.0 ||
+                std::fabs(visibleSpan - eyeSpanMs_) >
+                    std::max(0.002, eyeSpanMs_ * 0.01)) {
+                clearEyePersistence();
+                eyeSpanMs_ = visibleSpan;
+            }
+            if (!paused && cand >= 0 && cand != lastEyeTrigger_) {
+                lastEyeTrigger_ = cand;
+                if (pendingEyeTriggers_.size() ==
+                    kMaxPendingEyeTriggers)
+                    pendingEyeTriggers_.pop_front();
+                pendingEyeTriggers_.push_back(cand);
+            }
+            captureEyeSweeps(origin, head, visibleSpan);
+            updateEyePlots(vx0 + visibleSpan * config_.triggerPosition);
+        }
     }
 
     // While frozen the x coordinates stay anchored to the origin that
@@ -927,6 +1188,23 @@ void ScopeApp::updateScopePlots() {
         diffHi = vecMax(decCh_[2].ymax);
         topLo = std::min(vecMin(decCh_[0].ymin), vecMin(decCh_[1].ymin));
         topHi = std::max(vecMax(decCh_[0].ymax), vecMax(decCh_[1].ymax));
+        // Persistence outliers must remain visible when Y-Auto is enabled.
+        if (eyeMode_) {
+            for (const auto& sweep : eyeSweeps_) {
+                for (int ch = 0; ch < 3; ++ch) {
+                    if (sweep.ymin[ch].empty()) continue;
+                    const float lo = vecMin(sweep.ymin[ch]);
+                    const float hi = vecMax(sweep.ymax[ch]);
+                    if (ch == 2) {
+                        diffLo = std::min(diffLo, lo);
+                        diffHi = std::max(diffHi, hi);
+                    } else {
+                        topLo = std::min(topLo, lo);
+                        topHi = std::max(topHi, hi);
+                    }
+                }
+            }
+        }
     }
 
     // Continuous Y auto-fit per axes over the visible columns; a manual
@@ -967,7 +1245,7 @@ void ScopeApp::updateScopePlots() {
     }
 
     // Vertical trigger line at the anchor position — in follow mode this
-    // is the window center; with manual nav it tracks the newest
+    // uses the configured horizontal position; with manual nav it tracks the newest
     // candidate (or the live-edge anchor) in view coordinates.
     if (anchorMs >= 0.0) {
         const std::vector<float> tx{static_cast<float>(anchorMs),
@@ -1098,24 +1376,27 @@ void ScopeApp::updateWidgets() {
     messageList_->rect = vp::Rect2D{
         0, static_cast<int32_t>(static_cast<int32_t>(h) - kListHeight), w,
         static_cast<uint32_t>(kListHeight)};
-    figure_->grid().left = 0.06f;
-    figure_->grid().right = 0.99f;
+    // Keep only the margin needed for Y ticks/labels; the traces otherwise
+    // use the full window width.
+    figure_->grid().left = 0.035f;
+    figure_->grid().right = 0.997f;
     figure_->grid().top = 0.96f;
     figure_->grid().bottom =
         static_cast<float>(kListHeight + kControlHeight + 26) /
         static_cast<float>(h);
-    figure_->grid().hspace = 0.25f;
 
     const int32_t cy = static_cast<int32_t>(h) - kListHeight -
                        kControlHeight + 4;
-    thrSlider_->rect = vp::Rect2D{16, cy, 200, 30};
-    holdoffSlider_->rect = vp::Rect2D{224, cy, 200, 30};
-    bitrateButton_->rect = vp::Rect2D{432, cy, 140, 30};
-    modeButton_->rect = vp::Rect2D{580, cy, 160, 30};
-    autoButton_->rect = vp::Rect2D{748, cy, 120, 30};
-    followButton_->rect = vp::Rect2D{876, cy, 110, 30};
-    yautoButton_->rect = vp::Rect2D{994, cy, 100, 30};
-    clearButton_->rect = vp::Rect2D{1102, cy, 90, 30};
+    thrSlider_->rect = vp::Rect2D{10, cy, 180, 30};
+    holdoffSlider_->rect = vp::Rect2D{196, cy, 180, 30};
+    bitrateButton_->rect = vp::Rect2D{382, cy, 120, 30};
+    modeButton_->rect = vp::Rect2D{508, cy, 140, 30};
+    autoButton_->rect = vp::Rect2D{654, cy, 100, 30};
+    followButton_->rect = vp::Rect2D{760, cy, 100, 30};
+    yautoButton_->rect = vp::Rect2D{866, cy, 90, 30};
+    clearButton_->rect = vp::Rect2D{962, cy, 70, 30};
+    eyeButton_->rect = vp::Rect2D{1038, cy, 75, 30};
+    graphButton_->rect = vp::Rect2D{1119, cy, 130, 30};
 
     const int mode = paused_.load() ? 1 : holdFrozenUi_ ? 2 : 0;
     if (mode != titleMode_) {
@@ -1130,6 +1411,12 @@ void ScopeApp::updateWidgets() {
                        : mode == 2 ? "HOLDOFF"
                        : follow_.load() ? "Follow: on" : "Follow: off";
     yautoButton_->label = yAuto_.load() ? "Y-Auto: on" : "Y-Auto: off";
+    eyeButton_->label = eyeMode_ ? std::format("Eye: {}", eyeSweeps_.size())
+                                 : "Eye: off";
+    graphButton_->label = graphMode_ == GraphMode::Both
+        ? "Graphs: both"
+        : graphMode_ == GraphMode::Signals ? "Graphs: signals"
+                                           : "Graphs: diff";
 }
 
 } // namespace ucan

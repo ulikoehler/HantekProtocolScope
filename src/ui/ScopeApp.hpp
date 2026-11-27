@@ -42,6 +42,7 @@ struct AppConfig {
     float thresholdV = 1.1f;
     double holdoffUs = 1000.0;
     can::VirtualTrigger::Mode triggerMode = can::VirtualTrigger::Mode::Sof;
+    double triggerPosition = 0.1; // fraction of plot width from the left
     double windowMs = 20.0;
     size_t displayCapacity = 0; // 0 → derived from rateHz in run()
     uint32_t width = 1600;
@@ -72,6 +73,11 @@ private:
     void uiFrame();
     void updateScopePlots();
     void updateWidgets();
+    void setEyeMode(bool enabled);
+    void clearEyePersistence();
+    void captureEyeSweeps(int64_t origin, int64_t head, double spanMs);
+    void updateEyePlots(double triggerX);
+    void applyGraphMode();
     int runHeadless();
     void shutdown();
 
@@ -128,7 +134,7 @@ private:
     // trigger; auto = held sweep times out into live-edge free-run.
     std::atomic<bool> trigAuto_{true};
     // Newest holdoff-accepted trigger candidate (absolute sample) —
-    // written by the analyzer thread, read by the UI for centering.
+    // written by the analyzer thread, read by the UI for positioning.
     // Holdoff gates ONLY this view anchor; trigger events are unfiltered.
     std::atomic<int64_t> latestAccepted_{-1};
 
@@ -140,6 +146,8 @@ private:
     volcano::plot::Axes* axesDiff_ = nullptr; // CANH − CANL + trigger marks
     volcano::plot::LinePlot *canhMinLine_ = nullptr, *canhMaxLine_ = nullptr,
         *canlMinLine_ = nullptr, *canlMaxLine_ = nullptr;
+    std::array<volcano::plot::LinePlot*, 3> eyeMinLines_{};
+    std::array<volcano::plot::LinePlot*, 3> eyeMaxLines_{};
     volcano::plot::LinePlot *minLine_ = nullptr, *maxLine_ = nullptr,
         *thrLine_ = nullptr, *limLoLine_ = nullptr, *limHiLine_ = nullptr,
         *markerLine_ = nullptr, *markerTopLine_ = nullptr,
@@ -154,11 +162,32 @@ private:
     volcano::plot::Button* yautoButton_ = nullptr;
     volcano::plot::Button* clearButton_ = nullptr;
     volcano::plot::Button* autoButton_ = nullptr;
+    volcano::plot::Button* eyeButton_ = nullptr;
+    volcano::plot::Button* graphButton_ = nullptr;
 
     // UI-side state
     std::atomic<bool> yAuto_{true};
     bool lastAutoValid_ = false;
     double lastAutoX0_ = 0, lastAutoX1_ = 0;
+    // Time span retained by trigger-follow. Mouse-wheel zoom changes this
+    // span without disabling trigger positioning; panning still disables follow.
+    double followSpanMs_ = 0.0;
+    // Trigger-aligned persistence display. Each retained sweep is decimated
+    // into min/max columns; the combined translucent traces form an eye view.
+    struct EyeSweep {
+        std::vector<float> xOffsetMs;
+        std::array<std::vector<float>, 3> ymin;
+        std::array<std::vector<float>, 3> ymax;
+    };
+    bool eyeMode_ = false;
+    bool eyePlotsDirty_ = false;
+    int64_t lastEyeTrigger_ = -1;
+    std::deque<int64_t> pendingEyeTriggers_;
+    std::deque<EyeSweep> eyeSweeps_;
+    double eyeSpanMs_ = 0.0;
+    double eyePlotTriggerX_ = 0.0;
+    enum class GraphMode : uint8_t { Both, Signals, Diff };
+    GraphMode graphMode_ = GraphMode::Both;
     // X viewports of both axes are kept equal; syncedX tracks the last
     // common value so manual nav on either axes can be mirrored.
     bool syncedXValid_ = false;
