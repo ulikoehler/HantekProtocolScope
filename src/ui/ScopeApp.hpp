@@ -13,6 +13,7 @@
 
 #include <volcano/backend/Backend.hpp>
 #include <volcano/plot/Plot.hpp>
+#include <volcano/plot/plots/FillBetweenPlot.hpp>
 #include <volcano/plot/plots/LinePlot.hpp>
 #include <volcano/plot/plots/ReferenceLines.hpp>
 #include <volcano/render/Renderer.hpp>
@@ -144,12 +145,16 @@ private:
     std::unique_ptr<volcano::plot::Figure> figure_;
     volcano::plot::Axes* axesTop_ = nullptr;  // CANH + CANL traces
     volcano::plot::Axes* axesDiff_ = nullptr; // CANH − CANL + trigger marks
-    volcano::plot::LinePlot *canhMinLine_ = nullptr, *canhMaxLine_ = nullptr,
-        *canlMinLine_ = nullptr, *canlMaxLine_ = nullptr;
+    // Min/max decimation is drawn as a filled envelope band per channel;
+    // the bright max trace stays as a thin outline on top of the band.
+    volcano::plot::FillBetweenPlot *canhBand_ = nullptr,
+        *canlBand_ = nullptr, *diffBand_ = nullptr;
+    volcano::plot::LinePlot *canhMaxLine_ = nullptr,
+        *canlMaxLine_ = nullptr, *maxLine_ = nullptr;
     std::array<volcano::plot::LinePlot*, 3> eyeMinLines_{};
     std::array<volcano::plot::LinePlot*, 3> eyeMaxLines_{};
-    volcano::plot::LinePlot *minLine_ = nullptr, *maxLine_ = nullptr,
-        *thrLine_ = nullptr, *limLoLine_ = nullptr, *limHiLine_ = nullptr,
+    volcano::plot::LinePlot *thrLine_ = nullptr, *limLoLine_ = nullptr,
+        *limHiLine_ = nullptr,
         *markerLine_ = nullptr, *markerTopLine_ = nullptr,
         *trigLineTop_ = nullptr, *trigLineDiff_ = nullptr;
     volcano::plot::Vlines *frameEdgesOk_ = nullptr,

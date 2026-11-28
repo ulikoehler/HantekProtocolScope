@@ -24,10 +24,11 @@ IDs, payloads, CRC/ACK status, and measured voltage levels.
 ## Graph colors
 
 - **Gold/yellow** is CANH and **teal/cyan** is CANL.
-- **Dark and light blue** show the minimum and maximum differential voltage
-  (`CANH - CANL`) within each displayed time interval.
-- The dark/light shades of each signal are its minimum/maximum envelope when
-  many samples must be combined into one screen column.
+- **Blue** shows the differential voltage (`CANH - CANL`).
+- When many samples are combined into one screen column, each signal is drawn
+  as a translucent filled envelope spanning its minimum and maximum in that
+  column; a bright line follows the maximum. The envelope collapses to the
+  single bright line once one column contains only one sample.
 - **Orange** triangles and the orange dotted line mark trigger positions.
 - The **red dashed** horizontal line is the adjustable trigger threshold;
   **gray dashed** lines are CAN voltage-reference guides.

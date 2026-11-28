@@ -213,21 +213,16 @@ int ScopeApp::run() {
     axesDiff_->setYlim(-0.2f, 2.2f);
 
     using vp::Color;
-    vp::Series2D canhMinS, canhMaxS, canlMinS, canlMaxS, minS, maxS,
+    vp::Series2D canhMaxS, canlMaxS, maxS,
         thrS, loS, hiS, markS, markTopS, trigTopS, trigDiffS;
-    // CANH gold, CANL teal — min/max decimation in dark/light shades.
-    canhMinS.color = Color::fromRgba8(150, 95, 10);
-    canhMinS.lineWidth = 1.3f;
+    // CANH gold, CANL teal — the min/max decimation is a filled envelope
+    // band; the bright max trace is a thin outline on top.
     canhMaxS.color = Color::fromRgba8(235, 175, 55);
     canhMaxS.lineWidth = 1.3f;
     canhMaxS.label = "CANH";
-    canlMinS.color = Color::fromRgba8(20, 100, 105);
-    canlMinS.lineWidth = 1.3f;
     canlMaxS.color = Color::fromRgba8(80, 195, 200);
     canlMaxS.lineWidth = 1.3f;
     canlMaxS.label = "CANL";
-    minS.color = Color::fromRgba8(30, 90, 160);
-    minS.lineWidth = 1.3f;
     maxS.color = Color::fromRgba8(120, 170, 230);
     maxS.lineWidth = 1.3f;
     thrS.color = Color::fromRgba8(220, 60, 60);
@@ -247,9 +242,8 @@ int ScopeApp::run() {
     trigTopS.lineStyle = vp::LineStyle::Dotted;
     trigTopS.lineWidth = 1.0f;
     trigDiffS = trigTopS;
-    for (auto* s : {&canhMinS, &canhMaxS, &canlMinS, &canlMaxS, &minS,
-                    &maxS, &thrS, &loS, &hiS, &markS, &markTopS,
-                    &trigTopS, &trigDiffS}) {
+    for (auto* s : {&canhMaxS, &canlMaxS, &maxS, &thrS, &loS, &hiS,
+                    &markS, &markTopS, &trigTopS, &trigDiffS}) {
         s->usePropCycle = false;
         // LinePlot::prepare uploads unconditionally — an empty series
         // would create a zero-sized Vulkan buffer. One off-screen point
@@ -257,12 +251,22 @@ int ScopeApp::run() {
         s->points = {{0.0f, -50.0f}};
     }
 
-    canhMinLine_ = static_cast<vp::LinePlot*>(
-        axesTop_->addPlot(std::make_shared<vp::LinePlot>(canhMinS)));
+    // True min/max envelope: a filled band spanning [min, max] per pixel
+    // column instead of two near-coincident polylines. The band is drawn
+    // at zorder 1, below the bright max outline (LinePlot zorder 2).
+    const auto addBand = [](vp::Axes* axes, vp::Color color) {
+        return static_cast<vp::FillBetweenPlot*>(axes->addPlot(
+            std::make_shared<vp::FillBetweenPlot>(
+                std::vector<float>{0.0f, 0.0f},
+                std::vector<float>{-50.0f, -50.0f},
+                std::vector<float>{-50.0f, -50.0f}, color)));
+    };
+    canhBand_ = addBand(axesTop_, Color::fromRgba8(235, 175, 55, 80));
+    canlBand_ = addBand(axesTop_, Color::fromRgba8(80, 195, 200, 80));
+    diffBand_ = addBand(axesDiff_, Color::fromRgba8(120, 170, 230, 95));
+
     canhMaxLine_ = static_cast<vp::LinePlot*>(
         axesTop_->addPlot(std::make_shared<vp::LinePlot>(canhMaxS)));
-    canlMinLine_ = static_cast<vp::LinePlot*>(
-        axesTop_->addPlot(std::make_shared<vp::LinePlot>(canlMinS)));
     canlMaxLine_ = static_cast<vp::LinePlot*>(
         axesTop_->addPlot(std::make_shared<vp::LinePlot>(canlMaxS)));
     markerTopLine_ = static_cast<vp::LinePlot*>(
@@ -270,8 +274,6 @@ int ScopeApp::run() {
     trigLineTop_ = static_cast<vp::LinePlot*>(
         axesTop_->addPlot(std::make_shared<vp::LinePlot>(trigTopS)));
 
-    minLine_ = static_cast<vp::LinePlot*>(
-        axesDiff_->addPlot(std::make_shared<vp::LinePlot>(minS)));
     maxLine_ = static_cast<vp::LinePlot*>(
         axesDiff_->addPlot(std::make_shared<vp::LinePlot>(maxS)));
 
@@ -290,11 +292,11 @@ int ScopeApp::run() {
         line->zorder = 1.5f;
         return line;
     };
-    eyeMinLines_[0] = addEyeLine(axesTop_, canhMinS.color);
+    eyeMinLines_[0] = addEyeLine(axesTop_, Color::fromRgba8(150, 95, 10));
     eyeMaxLines_[0] = addEyeLine(axesTop_, canhMaxS.color);
-    eyeMinLines_[1] = addEyeLine(axesTop_, canlMinS.color);
+    eyeMinLines_[1] = addEyeLine(axesTop_, Color::fromRgba8(20, 100, 105));
     eyeMaxLines_[1] = addEyeLine(axesTop_, canlMaxS.color);
-    eyeMinLines_[2] = addEyeLine(axesDiff_, minS.color);
+    eyeMinLines_[2] = addEyeLine(axesDiff_, Color::fromRgba8(30, 90, 160));
     eyeMaxLines_[2] = addEyeLine(axesDiff_, maxS.color);
     thrLine_ = static_cast<vp::LinePlot*>(
         axesDiff_->addPlot(std::make_shared<vp::LinePlot>(thrS)));
@@ -1108,10 +1110,10 @@ void ScopeApp::updateScopePlots() {
                        vLast >= decHead_;
     const int64_t viewSpan = vLast - vFirst;
 
-    vp::LinePlot* minL[3] = {canhMinLine_, canlMinLine_, minLine_};
+    vp::FillBetweenPlot* bands[3] = {canhBand_, canlBand_, diffBand_};
     vp::LinePlot* maxL[3] = {canhMaxLine_, canlMaxLine_, maxLine_};
 
-    if (dirty && canhMinLine_ && minLine_) {
+    if (dirty && canhBand_ && diffBand_) {
         decVF_ = vFirst;
         decVL_ = vLast;
         decOrigin_ = coordBase;
@@ -1156,7 +1158,7 @@ void ScopeApp::updateScopePlots() {
                     lo[c] = l;
                     hi[c] = h;
                 }
-                minL[ch]->setData(xs_, lo);
+                bands[ch]->setData(xs_, hi, lo);
                 maxL[ch]->setData(xs_, hi);
                 any = true;
             }
@@ -1165,7 +1167,7 @@ void ScopeApp::updateScopePlots() {
             // View outside the retained buffer: blank the traces.
             const std::vector<float> blankX{0.0f}, blankY{-50.0f};
             for (int ch = 0; ch < 3; ++ch) {
-                minL[ch]->setData(blankX, blankY);
+                bands[ch]->setData(blankX, blankY, blankY);
                 maxL[ch]->setData(blankX, blankY);
                 decCh_[ch].ymin.clear();
                 decCh_[ch].ymax.clear();
